@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300">
+  <defs>
+    <linearGradient id="hat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe600"/>
+      <stop offset="100%" stop-color="#f6921e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Casco -->
+  <g>
+    <path d="M60 105 C60 45 100 5 150 5 C200 5 240 45 240 105 L240 118 L60 118 Z" fill="url(#hat)"/>
+    <rect x="45" y="105" width="210" height="30" rx="10" fill="url(#hat)"/>
+    <rect x="140" y="10" width="20" height="55" fill="#ffffff"/>
+  </g>
+
+  <!-- Lentes de seguridad -->
+  <path d="M55 150 C55 138 65 132 80 132 L220 132 C235 132 245 138 245 150
+           C245 210 210 250 150 250 C90 250 55 210 55 150 Z"
+        fill="#ffffff" stroke="#1a2233" stroke-width="8"/>
+  <path d="M75 148 C75 143 80 140 88 140 L212 140 C220 140 225 143 225 148
+           C225 175 205 195 150 195 C95 195 75 175 75 148 Z" fill="#7fd6dd"/>
+  <path d="M150 175 L162 210 L138 210 Z" fill="#9aa0a6"/>
+
+  <!-- Marca CIRAA -->
+  <g transform="translate(300,60)">
+    <rect x="0" y="0" width="170" height="90" rx="16" fill="#0f4c9c"/>
+    <rect x="6" y="6" width="158" height="78" rx="12" fill="#1565c0"/>
+    <text x="85" y="63" font-family="Arial, Helvetica, sans-serif" font-weight="900"
+          font-size="48" fill="#ffffff" text-anchor="middle">ciraa</text>
+    <circle cx="192" cy="10" r="14" fill="none" stroke="#0f4c9c" stroke-width="2"/>
+    <text x="192" y="15" font-family="Arial, Helvetica, sans-serif" font-size="11"
+          fill="#0f4c9c" text-anchor="middle" font-weight="700">MR</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="300" y="170" font-family="Arial, Helvetica, sans-serif" font-size="26"
+        fill="#0f4c9c" font-weight="700">TU ALMACÉN DE</text>
+  <text x="300" y="205" font-family="Arial, Helvetica, sans-serif" font-size="30"
+        fill="#0f4c9c" font-weight="900">¡SEGURIDAD!</text>
+</svg>
