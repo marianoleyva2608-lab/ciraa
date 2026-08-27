@@ -1,0 +1,2306 @@
+import os, io, base64, json, hashlib, datetime
+import requests
+from flask import Flask, request, send_file, jsonify, send_from_directory
+from qr_catalog import CATEGORIA_FIJA as QR_CATEGORIA_FIJA, GRUPOS as QR_GRUPOS, PLANTA as QR_PLANTA, PROVEEDORES as QR_PROVEEDORES
+
+app = Flask(__name__)
+ # ══════════════════════════════════════════════════════════
+# EXTRAER DATOS DE REFACCIÓN CON IA — usando OpenAI (agregar a app.py)
+# ══════════════════════════════════════════════════════════
+# Requiere: pip install requests (ya viene con Flask normalmente)
+# Requiere variable de entorno OPENAI_API_KEY en Easypanel
+# (Project > tu servicio > Environment)
+ 
+import requests as _requests
+ 
+CATEGORIAS_VALIDAS_IA = [
+    'Rodamientos', 'Bandas', 'Cadenas', 'Sellos', 'Filtros', 'Eléctrico', 'Hidráulico',
+    'Neumático', 'Tornillería', 'Consumible', 'Control temp.', 'Contactor', 'Relevador',
+    'SSR', 'Timer', 'Fuente DC', 'Resistencia', 'Electroválvula', 'Instrumento', 'Lubricante',
+    'Cable', 'Terminal', 'Conector', 'Fusible', 'Pulsador', 'Selector', 'Protección',
+    'Rodamiento', 'Manguera', 'Válvula', 'Herramienta', 'Otro'
+]
+ 
+ 
+@app.route('/api/refacciones/extraer-datos', methods=['POST'])
+def extraer_datos_refaccion():
+    d = request.json or {}
+    foto_b64 = d.get('foto_b64', '').strip()
+    media_type = d.get('media_type', 'image/jpeg')
+    imagen_url = d.get('imagen_url', '').strip()
+
+    if not foto_b64 and not imagen_url:
+        return jsonify({'error': 'No se recibió imagen'}), 400
+
+    # Si viene una URL publica, se manda tal cual a OpenAI (soporta URLs
+    # remotas ademas de imagenes en base64), sin necesidad de descargarla.
+    image_url_payload = imagen_url if imagen_url else f'data:{media_type};base64,{foto_b64}'
+
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        return jsonify({'error': 'OPENAI_API_KEY no configurada en el servidor'}), 500
+ 
+    prompt = (
+        "Eres un asistente que extrae datos de refacciones industriales a partir de fotos "
+        "(etiquetas, empaques, o la pieza física).\n"
+        "Responde SOLO con un JSON valido, sin texto adicional, sin backticks, con esta "
+        "estructura exacta:\n"
+        '{"nombre": "", "marca": "", "modelo": "", "categoria_sugerida": "", "notas": ""}\n'
+        'Para "categoria_sugerida" usa EXACTAMENTE una de estas opciones si aplica, o "Otro" '
+        "si no encaja: " + ", ".join(CATEGORIAS_VALIDAS_IA) + ".\n"
+        'Si algun dato no es visible o no estas seguro, deja el campo como cadena vacia "".'
+    )
+ 
+    try:
+        resp = _requests.post(
+            'https://api.openai.com/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'gpt-4o-mini',
+                'max_tokens': 500,
+                'messages': [{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image_url', 'image_url': {
+                            'url': image_url_payload
+                        }}
+                    ]
+                }],
+                'response_format': {'type': 'json_object'}
+            },
+            timeout=30
+        )
+        data = resp.json()
+ 
+        if 'error' in data:
+            return jsonify({'error': data['error'].get('message', 'Error de la API de OpenAI')}), 500
+ 
+        text = data['choices'][0]['message']['content']
+        clean = text.replace('```json', '').replace('```', '').strip()
+        extracted = json.loads(clean)
+ 
+        if extracted.get('categoria_sugerida') not in CATEGORIAS_VALIDAS_IA:
+            extracted['categoria_sugerida'] = 'Otro'
+ 
+        return jsonify({'ok': True, 'data': extracted})
+ 
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+ 
+DATA_DIR = os.environ.get('DATA_DIR', '/app/data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'reports.db')  # ya no se usa para leer/escribir; solo referencia historica
+
+# Postgres (Supabase) no es alcanzable por TCP directo desde este contenedor
+# (solo Kong, el gateway HTTP, esta en la red compartida). Todo el acceso a
+# datos pasa por la API REST de Supabase (PostgREST) a traves de Kong.
+SB_URL = os.environ.get('SUPABASE_INTERNAL_URL', 'http://manto_supabase_kong:8000').rstrip('/')
+SB_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
+
+class SB:
+    """Cliente minimo para la API REST de Supabase (PostgREST) via Kong."""
+    def __init__(self):
+        self.base = SB_URL + '/rest/v1'
+        self.headers = {
+            'apikey': SB_KEY,
+            'Authorization': f'Bearer {SB_KEY}',
+            'Content-Type': 'application/json',
+        }
+
+    def select(self, table, select='*', order=None, limit=None, **filters):
+        params = {'select': select}
+        params.update(filters)
+        if order:
+            params['order'] = order
+        if limit:
+            params['limit'] = limit
+        r = requests.get(f'{self.base}/{table}', headers=self.headers, params=params, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def insert(self, table, data, upsert=False, on_conflict=None, return_rows=True):
+        headers = dict(self.headers)
+        pref = []
+        if return_rows:
+            pref.append('return=representation')
+        if upsert:
+            pref.append('resolution=merge-duplicates')
+        if pref:
+            headers['Prefer'] = ','.join(pref)
+        params = {'on_conflict': on_conflict} if on_conflict else {}
+        r = requests.post(f'{self.base}/{table}', headers=headers, params=params, json=data, timeout=15)
+        r.raise_for_status()
+        return r.json() if return_rows and r.text else None
+
+    def update(self, table, data, return_rows=True, **filters):
+        headers = dict(self.headers)
+        if return_rows:
+            headers['Prefer'] = 'return=representation'
+        r = requests.patch(f'{self.base}/{table}', headers=headers, params=filters, json=data, timeout=15)
+        r.raise_for_status()
+        return r.json() if return_rows and r.text else None
+
+    def delete(self, table, return_rows=True, **filters):
+        headers = dict(self.headers)
+        if return_rows:
+            headers['Prefer'] = 'return=representation'
+        r = requests.delete(f'{self.base}/{table}', headers=headers, params=filters, timeout=15)
+        r.raise_for_status()
+        return r.json() if return_rows and r.text else None
+
+sb = SB()
+
+def init_db():
+    pass  # el esquema se crea una sola vez con schema.sql en Supabase Studio
+
+def init_users_db():
+    pass  # tabla 'users' creada por schema.sql en Supabase Studio
+
+def init_proveedores_db():
+    pass  # tabla 'proveedores_extra' creada por schema.sql en Supabase Studio
+
+init_db()
+init_users_db()
+init_proveedores_db()
+
+# Seed usuario admin por defecto (upsert por email, no pisa el PIN si ya existe)
+try:
+    _admin_existente = sb.select('users', select='id', email='eq.marianoleyva2608@gmail.com')
+    if not _admin_existente:
+        sb.insert('users', {
+            'nombre': 'Mariano Leyva',
+            'email': 'marianoleyva2608@gmail.com',
+            'pin_hash': hashlib.sha256('260881'.encode()).hexdigest(),
+            'rol': 'admin',
+            'permisos': 'all',
+        }, return_rows=False)
+    else:
+        sb.update('users', {'rol': 'admin', 'permisos': 'all'}, return_rows=False,
+                  email='eq.marianoleyva2608@gmail.com')
+except Exception as _e:
+    print(f'[seed admin] error: {_e}')
+
+def init_estantes_db():
+    pass  # tabla 'estantes' creada por schema.sql en Supabase Studio
+
+init_estantes_db()
+
+# Las migraciones historicas de una sola vez (restaurar cantidades desde
+# excels viejos, fotos placeholder por categoria, asignar numero_parte a
+# refacciones antiguas) ya no aplican: el inventario ahora se recarga
+# completo con el importador de Excel de la app.
+import unicodedata as _ud
+
+def _norm(s):
+    s = (s or '').strip().upper()
+    s = _ud.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+    return s
+
+def hash_pin(pin):
+    return hashlib.sha256(pin.encode()).hexdigest()
+
+TABS_VALIDAS = ('home', 'etiquetas', 'req', 'orden', 'rsp', 'reports', 'refacciones', 'settings')
+
+def _normalizar_permisos(permisos):
+    if isinstance(permisos, list):
+        permisos = ','.join(permisos)
+    permisos = (permisos or '').strip()
+    if permisos == 'all':
+        return 'all'
+    partes = [p.strip() for p in permisos.split(',') if p.strip() in TABS_VALIDAS]
+    return ','.join(partes)
+
+@app.route('/api/users/register', methods=['POST'])
+def register_user():
+    d = request.json
+    nombre   = d.get('nombre','').strip()
+    email    = d.get('email','').strip().lower()
+    pin      = d.get('pin','').strip()
+    rol      = d.get('rol','usuario').strip() or 'usuario'
+    if rol not in ('admin', 'usuario'):
+        rol = 'usuario'
+    permisos = _normalizar_permisos(d.get('permisos', ''))
+    if not nombre or not email or not pin or len(pin) < 4:
+        return jsonify({'error': 'Nombre, email y PIN (minimo 4 caracteres) requeridos'}), 400
+    try:
+        sb.insert('users', {
+            'nombre': nombre, 'email': email, 'pin_hash': hash_pin(pin),
+            'rol': rol, 'permisos': permisos,
+        }, return_rows=False)
+        return jsonify({'ok': True, 'nombre': nombre, 'email': email, 'rol': rol, 'permisos': permisos})
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 409:
+            return jsonify({'error': 'Este email ya esta registrado'}), 409
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/users/login', methods=['POST'])
+def login_user():
+    d = request.json
+    email = d.get('email','').strip().lower()
+    pin   = d.get('pin','').strip()
+    rows = sb.select('users', select='id,nombre,email,rol,permisos',
+                      email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    if not rows:
+        return jsonify({'error': 'Email o PIN incorrecto'}), 401
+    row = rows[0]
+    return jsonify({'ok': True, 'id': row['id'], 'nombre': row['nombre'], 'email': row['email'],
+                     'rol': row['rol'] or 'usuario', 'permisos': row['permisos'] or ''})
+
+@app.route('/api/users/verify', methods=['POST'])
+def verify_user():
+    d = request.json
+    email = d.get('email','').strip().lower()
+    pin   = d.get('pin','').strip()
+    rows = sb.select('users', select='id,nombre,email,rol,permisos',
+                      email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    if not rows:
+        return jsonify({'ok': False, 'error': 'PIN incorrecto'}), 200
+    row = rows[0]
+    return jsonify({'ok': True, 'nombre': row['nombre'], 'email': row['email'],
+                     'rol': row['rol'] or 'usuario', 'permisos': row['permisos'] or ''})
+
+@app.route('/api/users', methods=['GET'])
+def list_users():
+    rows = sb.select('users', select='id,nombre,email,rol,permisos,created_at', order='nombre.asc')
+    return jsonify(rows)
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    d = request.json or {}
+    rows = sb.select('users', select='id,email', id='eq.' + str(user_id))
+    if not rows:
+        return jsonify({'error': 'Usuario no encontrado'}), 404
+    row = rows[0]
+    data = {}
+    if 'nombre' in d and d['nombre'].strip():
+        data['nombre'] = d['nombre'].strip()
+    if 'rol' in d:
+        rol = d['rol'] if d['rol'] in ('admin', 'usuario') else 'usuario'
+        if row['email'] == 'marianoleyva2608@gmail.com' and rol != 'admin':
+            return jsonify({'error': 'No se puede quitar el rol de administrador a la cuenta principal'}), 400
+        data['rol'] = rol
+    if 'permisos' in d:
+        data['permisos'] = _normalizar_permisos(d['permisos'])
+    if not data:
+        return jsonify({'error': 'Nada que actualizar'}), 400
+    updated = sb.update('users', data, id='eq.' + str(user_id))
+    return jsonify({'ok': True, **updated[0]})
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    rows = sb.select('users', select='email', id='eq.' + str(user_id))
+    if not rows:
+        return jsonify({'error': 'Usuario no encontrado'}), 404
+    if rows[0]['email'] == 'marianoleyva2608@gmail.com':
+        return jsonify({'error': 'No se puede eliminar la cuenta administradora principal'}), 400
+    sb.delete('users', return_rows=False, id='eq.' + str(user_id))
+    return jsonify({'ok': True})
+
+def _parse_refacciones_excel(file):
+    """Lee un archivo Excel de refacciones y devuelve (parsed, col_map, error).
+    No toca la base de datos; solo interpreta el archivo. Se usa tanto para
+    la vista previa como para la importacion real."""
+    try:
+        wb = openpyxl.load_workbook(file, data_only=True)
+        ws = wb.active
+    except Exception as e:
+        return None, None, 'No se pudo leer el Excel: ' + str(e)
+
+    def norm(v):
+        return (str(v).strip() if v is not None else '')
+
+    def norm_header(v):
+        s = (str(v).strip().upper() if v is not None else '')
+        s = _ud.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
+        return ' '.join(s.split())
+
+    # --- Detectar automaticamente la fila de encabezados y mapear columnas ---
+    # Soporta distintos formatos/plantillas de Excel: busca en las primeras
+    # 10 filas la que tenga una celda que empiece con '#' o 'REFACC'.
+    HEADER_RULES = [
+        ('nombre',         ['REFACC']),
+        ('marca_modelo',   ['MARCA / MODELO', 'MARCA/MODELO']),
+        ('marca',          ['MARCA']),
+        ('modelo',         ['MODELO', 'NUM PARTE', 'NUM. PARTE']),
+        ('categoria',      ['CATEGOR']),
+        ('criticidad',     ['CRITICID']),
+        ('seccion',        ['SECCION', 'AREA', 'EQUIPO']),
+        ('cant_min',       ['CANT']),
+        ('stock_actual',   ['STOCK']),
+        ('tiempo_entrega', ['ENTREGA']),
+        ('proveedor',      ['PROVEEDOR']),
+        ('ubicacion',      ['UBICACION']),
+        ('costo',          ['COSTO']),
+        ('notas',          ['NOTAS', 'OBSERVAC']),
+    ]
+
+    header_row_idx = None
+    col_map = {}
+    all_rows = list(ws.iter_rows(values_only=True))
+    for i, row in enumerate(all_rows[:10]):
+        headers_norm = [norm_header(c) for c in row]
+        if any(h == '#' or h.startswith('REFACC') for h in headers_norm):
+            header_row_idx = i
+            for col_i, h in enumerate(headers_norm):
+                if not h:
+                    continue
+                for field, keywords in HEADER_RULES:
+                    if field in col_map:
+                        continue
+                    if any(kw in h for kw in keywords):
+                        col_map[field] = col_i
+                        break
+            break
+
+    if header_row_idx is None or 'nombre' not in col_map:
+        return None, None, 'No se encontro una fila de encabezados reconocible (se esperaba una columna "#" y "Refaccion/Descripcion")'
+
+    def cell(row, field, default=None):
+        idx = col_map.get(field)
+        if idx is None or idx >= len(row):
+            return default
+        return row[idx]
+
+    parsed = []
+    seccion_actual = ''
+    for row in all_rows[header_row_idx + 1:]:
+        if not row or row[0] is None:
+            continue
+        col0 = row[0]
+        if isinstance(col0, str) and ('\u258c' in col0 or col0.strip()[:1] in ('\U0001F534', '\U0001F7E1', '\U0001F7E2', '\u2139')):
+            if '\u258c' in col0:
+                seccion_actual = col0.replace('\u258c', '').strip()
+            continue
+        try:
+            int(col0)
+        except (ValueError, TypeError):
+            continue
+        nombre = norm(cell(row, 'nombre'))
+        if not nombre:
+            continue
+
+        def as_int(v, default=0):
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                return default
+
+        def as_float(v, default=0.0):
+            try:
+                if isinstance(v, str):
+                    v = v.replace('$', '').replace(',', '').strip()
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
+        marca, modelo = '', ''
+        if 'marca_modelo' in col_map:
+            combo = norm(cell(row, 'marca_modelo'))
+            if '/' in combo:
+                marca, modelo = [p.strip() for p in combo.split('/', 1)]
+            else:
+                marca = combo
+        else:
+            marca = norm(cell(row, 'marca'))
+            modelo = norm(cell(row, 'modelo'))
+
+        seccion_celda = norm(cell(row, 'seccion'))
+        parsed.append({
+            'nombre': nombre,
+            'marca': marca,
+            'modelo': modelo,
+            'categoria': norm(cell(row, 'categoria')),
+            'criticidad': (norm(cell(row, 'criticidad')) or 'MEDIA').upper(),
+            'seccion': seccion_celda or seccion_actual,
+            'cant_min': as_int(cell(row, 'cant_min'), 1),
+            'stock_actual': as_int(cell(row, 'stock_actual'), 0),
+            'tiempo_entrega': norm(cell(row, 'tiempo_entrega')),
+            'proveedor': norm(cell(row, 'proveedor')),
+            'ubicacion': norm(cell(row, 'ubicacion')),
+            'costo': as_float(cell(row, 'costo'), 0.0),
+            'notas': norm(cell(row, 'notas')),
+        })
+
+    if not parsed:
+        return None, col_map, 'No se encontraron refacciones validas en el archivo'
+    return parsed, col_map, None
+
+
+def _norm_key(s):
+    return ''.join((s or '').strip().lower().split())
+
+
+def _contar_nuevas_actualizadas(parsed):
+    """Para cada item parseado, dice si ya existe (se actualizaria) o es
+    nuevo (se agregaria). Tambien cuenta cuantas refacciones actuales NO
+    vienen en el archivo (esas se eliminarian). No modifica nada."""
+    existing = sb.select('refacciones', select='id,nombre,marca,modelo')
+    existing_by_name = {}
+    existing_by_marca_modelo = {}
+    for e in existing:
+        name_key = _norm_key(e['nombre'])
+        if name_key and name_key not in existing_by_name:
+            existing_by_name[name_key] = e
+        mm_key = (_norm_key(e['marca']), _norm_key(e['modelo']))
+        if mm_key != ('', '') and mm_key not in existing_by_marca_modelo:
+            existing_by_marca_modelo[mm_key] = e
+
+    nuevas, actualizadas = 0, 0
+    matched_ids = set()
+    for item in parsed:
+        name_key = _norm_key(item['nombre'])
+        mm_key = (_norm_key(item['marca']), _norm_key(item['modelo']))
+        prev = existing_by_name.get(name_key)
+        if not prev and mm_key != ('', ''):
+            prev = existing_by_marca_modelo.get(mm_key)
+        if prev:
+            actualizadas += 1
+            matched_ids.add(prev['id'])
+        else:
+            nuevas += 1
+    a_eliminar = [e['nombre'] for e in existing if e['id'] not in matched_ids]
+    return nuevas, actualizadas, len(existing), a_eliminar
+
+
+@app.route('/api/refacciones/import-preview', methods=['POST'])
+def preview_import_refacciones_excel():
+    """Solo LEE el archivo y muestra que pasaria si se importa. No toca
+    la base de datos en absoluto."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se recibio ningun archivo'}), 400
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'error': 'Archivo vacio'}), 400
+
+    parsed, col_map, error = _parse_refacciones_excel(file)
+    if error:
+        return jsonify({'error': error}), 400
+
+    nuevas, actualizadas, total_actual, a_eliminar_nombres = _contar_nuevas_actualizadas(parsed)
+
+    return jsonify({
+        'ok': True,
+        'total_en_archivo': len(parsed),
+        'total_actual_en_app': total_actual,
+        'nuevas': nuevas,
+        'actualizadas': actualizadas,
+        'eliminadas': len(a_eliminar_nombres),
+        'eliminadas_nombres': a_eliminar_nombres[:20],
+        'columnas_detectadas': list(col_map.keys()),
+        'muestra': parsed[:15],  # primeras filas para mostrar de ejemplo
+    })
+
+
+@app.route('/api/refacciones/import', methods=['POST'])
+def import_refacciones_excel():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se recibio ningun archivo'}), 400
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'error': 'Archivo vacio'}), 400
+
+    parsed, col_map, error = _parse_refacciones_excel(file)
+    if error:
+        return jsonify({'error': error}), 400
+
+    existing = sb.select('refacciones', select='id,nombre,marca,modelo,imagen_url,foto_b64,numero_parte')
+    existing_by_name = {}
+    existing_by_marca_modelo = {}
+    for e in existing:
+        name_key = _norm_key(e['nombre'])
+        if name_key and name_key not in existing_by_name:
+            existing_by_name[name_key] = e
+        mm_key = (_norm_key(e['marca']), _norm_key(e['modelo']))
+        if mm_key != ('', '') and mm_key not in existing_by_marca_modelo:
+            existing_by_marca_modelo[mm_key] = e
+
+    nuevas = 0
+    actualizadas = 0
+    matched_ids = set()
+    for item in parsed:
+        name_key = _norm_key(item['nombre'])
+        mm_key = (_norm_key(item['marca']), _norm_key(item['modelo']))
+        prev = existing_by_name.get(name_key)
+        if not prev and mm_key != ('', ''):
+            prev = existing_by_marca_modelo.get(mm_key)
+        data = {
+            'nombre': item['nombre'], 'marca': item['marca'], 'modelo': item['modelo'],
+            'categoria': item['categoria'], 'criticidad': item['criticidad'], 'seccion': item['seccion'],
+            'cant_min': item['cant_min'], 'stock_actual': item['stock_actual'],
+            'tiempo_entrega': item['tiempo_entrega'], 'proveedor': item['proveedor'],
+            'ubicacion': item['ubicacion'], 'costo': item['costo'], 'notas': item['notas'],
+        }
+        if prev:
+            # Refaccion ya existente: se actualizan sus datos pero se
+            # CONSERVAN foto y numero_parte (no se tocan esos campos).
+            sb.update('refacciones', data, return_rows=False, id='eq.' + str(prev['id']))
+            actualizadas += 1
+            matched_ids.add(prev['id'])
+        else:
+            sb.insert('refacciones', data, return_rows=False)
+            nuevas += 1
+
+    # Las refacciones que YA NO vienen en este archivo se eliminan (para que
+    # la lista no acumule sobrantes). Las que si coinciden ya se preservaron
+    # arriba con su foto/numero_parte intactos.
+    eliminadas = 0
+    sobrantes_ids = [e['id'] for e in existing if e['id'] not in matched_ids]
+    if sobrantes_ids:
+        ids_filter = 'in.(' + ','.join(str(i) for i in sobrantes_ids) + ')'
+        borradas = sb.delete('refacciones', id=ids_filter)
+        eliminadas = len(borradas) if borradas else 0
+
+    return jsonify({
+        'ok': True,
+        'importadas': nuevas + actualizadas,
+        'nuevas': nuevas,
+        'eliminadas': eliminadas,
+        'actualizadas': actualizadas,
+        'columnas_detectadas': list(col_map.keys()),
+    })
+
+@app.route('/api/refacciones/bulk-delete', methods=['POST'])
+def bulk_delete_refacciones():
+    d = request.json or {}
+    ids = d.get('ids') or []
+    ids = [int(i) for i in ids if str(i).isdigit()]
+    if not ids:
+        return jsonify({'error': 'No se recibieron ids validos'}), 400
+    ids_filter = 'in.(' + ','.join(str(i) for i in ids) + ')'
+    borradas = sb.delete('refacciones', id=ids_filter)
+    deleted = len(borradas) if borradas else 0
+    return jsonify({'ok': True, 'deleted': deleted})
+
+@app.route('/api/users/change-pin', methods=['POST'])
+def change_pin_user():
+    d = request.json or {}
+    email      = d.get('email','').strip().lower()
+    pin_actual = d.get('pin_actual','').strip()
+    pin_nuevo  = d.get('pin_nuevo','').strip()
+    if not email or not pin_actual or not pin_nuevo:
+        return jsonify({'error': 'Email, PIN actual y PIN nuevo son requeridos'}), 400
+    if len(pin_nuevo) < 4:
+        return jsonify({'error': 'El PIN nuevo debe tener minimo 4 caracteres'}), 400
+    rows = sb.select('users', select='id', email='eq.' + email, pin_hash='eq.' + hash_pin(pin_actual))
+    if not rows:
+        return jsonify({'error': 'Email o PIN actual incorrecto'}), 401
+    sb.update('users', {'pin_hash': hash_pin(pin_nuevo)}, return_rows=False, id='eq.' + str(rows[0]['id']))
+    return jsonify({'ok': True})
+
+try:
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.page import PageMargins
+except ImportError:
+    os.system("pip install openpyxl -q")
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.worksheet.page import PageMargins
+
+MONTH_COLS = {"ENE":"B","FEB":"C","MAR":"D","ABR":"E","MAY":"F","JUN":"G",
+              "JUL":"H","AGO":"I","SEP":"J","OCT":"K","NOV":"L","DIC":"M"}
+
+def _wc(ws, row, col, value, alignment=None):
+    cell = ws.cell(row=row, column=col)
+    try:
+        cell.value = value
+    except AttributeError:
+        return
+    if alignment:
+        cell.alignment = alignment
+
+def apply_checklist_data(ws, data):
+    SHEET_SIG = {
+        'TF 1':45,'TF 2':45,'TF 3':45,'TF 4':45,'TF 5':45,'TF 6':45,'TF 7':45,
+        'prensa 1':40,'Prensa 2':40,
+        'Suajadora 1':26,'Suajadora 2':26,'Suajadora 5':26,'TCU':26,'Chiller':27,
+        'Laminator':37,'Slitter Rewinder':37,'Komatsu OBS45':35,
+        'Rotary Press':37,'Prensa PL':32,'IMESA':31,'Single Knife':31,
+        'Hojeadora Robust':31,'Gapcutter':30,'Calender K1 Easy':41,
+    }
+    sheet_name = data.get('sheet', '')
+    sig_row = SHEET_SIG.get(sheet_name) or data.get('sig_row')
+    cal_row = data.get('cal_data_row')
+    max_item_row = (sig_row - 1) if sig_row else 9999
+
+    for item in data.get('items', []):
+        row, st, cm = item['row'], item.get('status',''), item.get('comment','')
+        if row > max_item_row:
+            continue
+        _wc(ws, row, 11, '( v )' if st == 'ok' else '(   )')
+        _wc(ws, row, 12, '( v )' if st == 'ng' else '(   )')
+        if cm:
+            _wc(ws, row, 13, cm)
+
+    months = set(data.get('month', []))
+    if cal_row:
+        for m, col in MONTH_COLS.items():
+            _wc(ws, cal_row, ord(col)-ord('A')+1, '( v )' if m in months else '(   )')
+        v = data.get('voltaje', {})
+        if sheet_name == 'Rotary Press':
+            if v.get('l1'):  _wc(ws, cal_row, 14, v['l1'])
+            if v.get('vac'): _wc(ws, cal_row, 15, v['vac'])
+        else:
+            for col_n, key in [(14,'l1'),(15,'l2'),(16,'l3'),(17,'vac')]:
+                if v.get(key):
+                    _wc(ws, cal_row, col_n, v[key])
+
+    if sig_row:
+        tec = data.get('tecnico','_______________')
+        fec = data.get('fecha','_______________')
+        sup = data.get('supervisor','_______________')
+        firma_row = sig_row + 1
+        _wc(ws, sig_row, 2,  "Realizo:")
+        _wc(ws, sig_row, 8,  "Fecha: " + fec)
+        fecha_cell = ws.cell(row=sig_row, column=8)
+        fecha_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        fecha_cell.font = Font(bold=True, color='FFFFFF', size=11)
+        fecha_cell.fill = PatternFill(fill_type='solid', fgColor='FF1A5C2A')
+        _wc(ws, sig_row, 11, "Supervisor de Produccion:")
+
+        tec_sig = data.get('sigTecnico') or {}
+        sup_sig = data.get('sigSupervisor') or {}
+
+        if isinstance(tec_sig, dict) and not tec_sig.get('nombre') and tec and tec != '_______________':
+            tec_sig = dict(tec_sig); tec_sig['nombre'] = tec
+        if isinstance(sup_sig, dict) and not sup_sig.get('nombre') and sup and sup != '_______________':
+            sup_sig = dict(sup_sig); sup_sig['nombre'] = sup
+
+        has_tec = isinstance(tec_sig, dict) and bool(tec_sig.get('nombre')) and bool(tec_sig.get('fecha'))
+        has_sup = isinstance(sup_sig, dict) and bool(sup_sig.get('nombre')) and bool(sup_sig.get('fecha'))
+
+        if has_tec or has_sup:
+            ws.row_dimensions[firma_row].height = 70
+            ws.row_dimensions[firma_row + 1].height = 0  # ocultar fila extra
+
+        def write_pki(col, sig):
+            pki_text = (sig.get('nombre','') + "\n"
+                "Fecha:    " + sig.get('fecha','') + "\n"
+                "Serie:    " + sig.get('serie','') + "\n"
+                "Emisor:   CIRA Mexico")
+            cell = ws.cell(row=firma_row, column=col)
+            try:
+                cell.value = pki_text
+                cell.alignment = Alignment(wrap_text=True, vertical='top', horizontal='center')
+                cell.font = Font(name='Calibri', size=10, bold=True, color='FF000000')
+            except AttributeError:
+                pass
+
+        if has_tec:
+            write_pki(2, tec_sig)
+        if has_sup:
+            write_pki(11, sup_sig)
+
+        # --- UNIFICAR PAGE SETUP en todos los formatos ---
+        last_print_row = firma_row  # no incluir fila extra
+        start_print_row = 2 if sheet_name.startswith('TF') else 1
+        ws.print_area = '$B${}:$Q${}'.format(start_print_row, last_print_row)
+        ws.page_setup.orientation = 'portrait'
+        if sheet_name == 'Rotary Press':
+            ws.page_setup.fitToPage = True
+            ws.page_setup.fitToHeight = 1
+            ws.page_setup.fitToWidth = 1
+        else:
+            ws.page_setup.scale = 44
+        ws.page_margins = PageMargins(
+            left=0.70, right=0.70, top=0.75, bottom=0.75,
+            header=0.3, footer=0.3
+        )
+
+@app.route('/api/reports', methods=['GET'])
+def api_get_reports():
+    rows = sb.select('reports', select='data', order='id.desc')
+    return jsonify([json.loads(r['data']) for r in rows])
+
+@app.route('/api/reports', methods=['POST'])
+def api_save_report():
+    r = request.json
+    sb.delete('reports', return_rows=False,
+              machine_id='eq.' + r.get('machineId',''), fecha='eq.' + r.get('fecha',''))
+    sb.insert('reports', {
+        'id': r['id'], 'machine_id': r.get('machineId',''),
+        'fecha': r.get('fecha',''), 'data': json.dumps(r),
+    }, return_rows=False)
+    return jsonify({'ok': True})
+
+@app.route('/api/reports/<int:report_id>', methods=['DELETE'])
+def api_delete_report(report_id):
+    sb.delete('reports', return_rows=False, id='eq.' + str(report_id))
+    return jsonify({'ok': True})
+@app.route('/api/reports/export', methods=['GET'])
+def api_export_reports():
+    rows = sb.select('reports', select='data', order='id.desc')
+    data = [json.loads(r['data']) for r in rows]
+    fname = 'reportes_backup_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '.json'
+    resp = app.response_class(
+        response=json.dumps(data, ensure_ascii=False, indent=2),
+        status=200, mimetype='application/json'
+    )
+    resp.headers['Content-Disposition'] = f'attachment; filename="{fname}"'
+    return resp
+
+@app.route('/api/reports/import', methods=['POST'])
+def api_import_reports():
+    reports = request.json
+    if not isinstance(reports, list):
+        return jsonify({'error': 'Se esperaba una lista'}), 400
+    imported = 0
+    for r in reports:
+        try:
+            sb.insert('reports', {
+                'id': r['id'], 'machine_id': r.get('machineId',''),
+                'fecha': r.get('fecha',''), 'data': json.dumps(r),
+            }, on_conflict='id', return_rows=False)
+            imported += 1
+        except Exception:
+            pass
+    return jsonify({'ok': True, 'imported': imported})
+
+
+@app.route('/')
+def index():
+    html = open('index.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
+
+@app.route('/etiquetas')
+@app.route('/etiquetas.html')
+def etiquetas():
+    html = open('etiquetas.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
+
+# Sirve archivos estaticos sueltos que viven junto a app.py (imagenes, iconos,
+# etc.) para que URLs como /logo-conversion.png funcionen. Solo permite
+# extensiones de archivo seguras/esperadas, nunca .py ni archivos de datos.
+_EXTENSIONES_ESTATICAS_PERMITIDAS = ('.png', '.jpg', '.jpeg', '.svg', '.ico', '.gif', '.webp')
+
+@app.route('/<path:nombre_archivo>')
+def servir_estatico(nombre_archivo):
+    if not nombre_archivo.lower().endswith(_EXTENSIONES_ESTATICAS_PERMITIDAS):
+        return jsonify({'error': 'No encontrado'}), 404
+    directorio = os.path.dirname(os.path.abspath(__file__))
+    ruta_completa = os.path.join(directorio, nombre_archivo)
+    if not os.path.isfile(ruta_completa):
+        return jsonify({'error': 'No encontrado'}), 404
+    return send_from_directory(directorio, nombre_archivo)
+
+@app.route('/generar', methods=['POST'])
+def generar():
+    try:
+        data = request.json
+        file_key = data.get('file', 'termoformado')
+        template = 'MTTO_Preventivo_Termoformado_2026.xlsx' if file_key == 'termoformado' else 'MTTO_Preventivo_Conversion_2026.xlsx'
+        wb = openpyxl.load_workbook(template)
+        ws = wb[data['sheet']]
+        apply_checklist_data(ws, data)
+        for s in [n for n in wb.sheetnames if n != ws.title]:
+            del wb[s]
+        buf = io.BytesIO()
+        wb.save(buf); buf.seek(0)
+        fname = "REPORTE_" + data.get('machineId','EQ') + "_" + data.get('fecha','').replace('/','-') + ".xlsx"
+        return send_file(buf, as_attachment=True, download_name=fname,
+                         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return {'error': str(e)}, 500
+
+@app.route('/generar_pdf', methods=['POST'])
+def generar_pdf():
+    import tempfile, subprocess, shutil
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        data = request.json
+        file_key = data.get('file', 'termoformado')
+        template = 'MTTO_Preventivo_Termoformado_2026.xlsx' if file_key == 'termoformado' else 'MTTO_Preventivo_Conversion_2026.xlsx'
+        wb = openpyxl.load_workbook(template)
+        ws = wb[data['sheet']]
+        apply_checklist_data(ws, data)
+        for s in [s for s in wb.sheetnames if s != ws.title]:
+            del wb[s]
+        xlsx_path = os.path.join(tmp_dir, 'reporte.xlsx')
+        wb.save(xlsx_path)
+        result = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmp_dir, xlsx_path],
+            capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError("LibreOffice error: " + result.stderr)
+        pdf_path = os.path.join(tmp_dir, 'reporte.pdf')
+        if not os.path.exists(pdf_path):
+            raise RuntimeError("PDF no generado por LibreOffice")
+        with open(pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        fname = "REPORTE_" + data.get('machineId','EQ') + "_" + data.get('fecha','').replace('/','-') + ".pdf"
+        return send_file(io.BytesIO(pdf_bytes), as_attachment=True, download_name=fname, mimetype='application/pdf')
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _max_numero_work_order():
+    rows = sb.select('work_orders', select='numero')
+    nums = []
+    for r in rows:
+        try:
+            nums.append(int(r['numero']))
+        except (ValueError, TypeError):
+            continue
+    return max(nums) if nums else 257
+
+@app.route('/api/work-orders', methods=['GET'])
+def api_get_work_orders():
+    rows = sb.select('work_orders', select='*', order='id.desc')
+    return jsonify(rows)
+
+@app.route('/api/work-orders', methods=['POST'])
+def api_save_work_order():
+    data = request.json
+    numero = str(_max_numero_work_order() + 1).zfill(4)
+    nueva = sb.insert('work_orders', {
+        'numero': numero, 'solicitante': data.get('solicitante',''), 'fecha': data.get('fecha',''),
+        'equipo': data.get('equipo',''), 'planta': data.get('planta',''), 'tipo': data.get('tipo',''),
+        'estatus': data.get('estatus',''), 'hora_inicio': data.get('hora_inicio',''),
+        'hora_termino': data.get('hora_termino',''), 'tiempo_paro': data.get('tiempo_paro',''),
+        'descripcion_falla': data.get('descripcion_falla',''), 'actividad_realizada': data.get('actividad_realizada',''),
+        'refaccion': data.get('refaccion',''), 'observaciones': data.get('observaciones',''),
+        'firma_solicitante': data.get('firma_solicitante',''), 'firma_recibe': data.get('firma_recibe',''),
+        'firma_liberacion': data.get('firma_liberacion',''), 'fotos': data.get('fotos','[]'),
+    })
+    return jsonify({'ok': True, 'id': nueva[0]['id'], 'numero': numero})
+
+@app.route('/api/work-orders/<int:order_id>', methods=['DELETE'])
+def api_delete_work_order(order_id):
+    sb.delete('work_orders', return_rows=False, id='eq.' + str(order_id))
+    return jsonify({'ok': True})
+
+@app.route('/api/work-orders/next-number', methods=['GET'])
+def api_next_order_number():
+    return jsonify({'numero': str(_max_numero_work_order() + 1).zfill(4)})
+
+
+# ── RESPUESTA A SOLUCION DE PROBLEMAS PARA MANTENIMIENTO ──────────
+# Modulo independiente (no modifica Ordenes de Trabajo). Se llena cuando
+# una falla supera el tiempo estimado de MTTR.
+@app.route('/api/respuestas-problemas/next-folio', methods=['GET'])
+def api_next_folio_rsp():
+    rows = sb.select('respuestas_problemas', select='folio')
+    nums = []
+    for r in rows:
+        try:
+            nums.append(int((r['folio'] or '').replace('RSP-', '')))
+        except (ValueError, TypeError):
+            continue
+    next_num = (max(nums) if nums else 0) + 1
+    return jsonify({'folio': 'RSP-' + str(next_num).zfill(4)})
+
+@app.route('/api/respuestas-problemas', methods=['GET'])
+def api_get_respuestas_problemas():
+    rows = sb.select('respuestas_problemas', select='*', order='id.desc')
+    return jsonify(rows)
+
+@app.route('/api/respuestas-problemas', methods=['POST'])
+def api_create_respuesta_problema():
+    d = request.json or {}
+    nueva = sb.insert('respuestas_problemas', {
+        'folio': d.get('folio',''), 'fecha': d.get('fecha',''), 'equipo': d.get('equipo',''),
+        'seccion': d.get('seccion',''), 'descripcion_falla': d.get('descripcion_falla',''),
+        'hora_inicio': d.get('hora_inicio',''), 'mttr_estimado': d.get('mttr_estimado',''),
+        'tiempo_real': d.get('tiempo_real',''), 'areas_notificadas': d.get('areas_notificadas',''),
+        'acciones_tomadas': d.get('acciones_tomadas',''), 'causa_raiz': d.get('causa_raiz',''),
+        'tiempo_total_paro': d.get('tiempo_total_paro',''), 'elaboro': d.get('elaboro',''),
+    })
+    return jsonify({'ok': True, 'id': nueva[0]['id']})
+
+@app.route('/api/respuestas-problemas/<int:rid>', methods=['DELETE'])
+def api_delete_respuesta_problema(rid):
+    sb.delete('respuestas_problemas', return_rows=False, id='eq.' + str(rid))
+    return jsonify({'ok': True})
+
+@app.route('/api/respuestas-problemas/<int:rid>/pdf', methods=['GET'])
+def api_pdf_respuesta_problema(rid):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER
+
+    rows = sb.select('respuestas_problemas', select='*', id='eq.' + str(rid))
+    r = rows[0] if rows else None
+    if not r:
+        return jsonify({'error': 'No encontrado'}), 404
+
+    GREEN_DARK = colors.HexColor('#1F5C2E')
+    WHITE = colors.white
+    GRAY = colors.HexColor('#F5F5F5')
+
+    def ps(size=9, bold=False, align=TA_LEFT):
+        return ParagraphStyle('x', fontSize=size, leading=size+3,
+                              fontName='Helvetica-Bold' if bold else 'Helvetica', alignment=align)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=18*mm, rightMargin=18*mm, topMargin=14*mm, bottomMargin=14*mm)
+    W = letter[0] - 36*mm
+    story = []
+    t = Table([[Paragraph('RESPUESTA A SOLUCIÓN DE PROBLEMAS PARA MANTENIMIENTO', ps(13, True, TA_CENTER))]], colWidths=[W])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_DARK),('TEXTCOLOR',(0,0),(-1,-1),WHITE),
+                           ('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8)]))
+    story.append(t)
+    story.append(Spacer(1,4*mm))
+
+    campos = [
+        ('Folio', r['folio']), ('Fecha', r['fecha']), ('Equipo', r['equipo']), ('Sección/Área', r['seccion']),
+        ('Descripción de la falla', r['descripcion_falla']), ('Hora de inicio del paro', r['hora_inicio']),
+        ('MTTR estimado', r['mttr_estimado']), ('Tiempo real transcurrido', r['tiempo_real']),
+        ('Áreas notificadas', r['areas_notificadas']), ('Acciones tomadas', r['acciones_tomadas']),
+        ('Causa raíz identificada', r['causa_raiz']), ('Tiempo total de paro', r['tiempo_total_paro']),
+        ('Elaboró', r['elaboro']),
+    ]
+    tdata = [[Paragraph(k, ps(9,True)), Paragraph(str(v or ''), ps(9))] for k, v in campos]
+    dt = Table(tdata, colWidths=[W*0.32, W*0.68])
+    dt.setStyle(TableStyle([
+        ('GRID',(0,0),(-1,-1),0.4,colors.HexColor('#BDBDBD')),
+        ('BACKGROUND',(0,0),(0,-1),GRAY),
+        ('VALIGN',(0,0),(-1,-1),'TOP'),
+        ('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6),
+        ('LEFTPADDING',(0,0),(-1,-1),8),
+    ]))
+    story.append(dt)
+    doc.build(story)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"{r['folio'] or 'RSP'}.pdf", mimetype='application/pdf')
+
+
+@app.route('/version')
+def version():
+    return jsonify({'commit': 'a1f9c33', 'fix': 'unified_page_setup_all_formats'})
+
+
+# ── PDF ORDEN DE TRABAJO ──────────────────────────────────────────
+@app.route('/api/work-orders/<int:order_id>/pdf')
+def api_orden_pdf(order_id):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm, mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.pdfgen import canvas as pdfcanvas
+    import io, json, base64
+
+    rows = sb.select('work_orders', select='*', id='eq.' + str(order_id))
+    o = rows[0] if rows else None
+    if not o: return jsonify({'error':'not found'}),404
+
+    buf = io.BytesIO()
+    W, H = letter  # 612 x 792 pts
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+
+    GREEN = colors.HexColor('#1b5e20')
+    RED   = colors.HexColor('#c62828')
+    LGRAY = colors.HexColor('#f5f5f5')
+    BLACK = colors.black
+
+    margin = 1.5*cm
+    w = W - 2*margin
+    y = H - margin
+
+    def line(y): c.setStrokeColor(colors.HexColor('#cccccc')); c.line(margin, y, margin+w, y)
+    def chk(val, opt): return '[v]' if val==opt else '[ ]'
+    def txt(t,x,yy,size=9,bold=False,color=BLACK):
+        c.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
+        c.setFillColor(color)
+        c.drawString(x,yy,str(t or ''))
+
+    # ── BORDER ──
+    c.setStrokeColor(GREEN); c.setLineWidth(2)
+    c.rect(margin-2, margin-2, w+4, H-2*margin+4)
+
+    # ── HEADER ──
+    y -= 0.3*cm
+    # CIRA box
+    c.setStrokeColor(GREEN); c.setLineWidth(1.5)
+    c.rect(margin+2, y-1.2*cm, 2.8*cm, 1.4*cm)
+    c.setFont('Helvetica-Bold',14); c.setFillColor(GREEN)
+    c.drawString(margin+8, y-0.5*cm, 'ad')
+    c.setFont('Helvetica-Bold',9)
+    c.drawString(margin+6, y-0.9*cm, 'CIRA')
+
+    # Title
+    c.setFont('Helvetica-Bold',14); c.setFillColor(GREEN)
+    c.drawCentredString(W/2, y-0.3*cm, 'ORDEN DE TRABAJO PARA MANTENIMIENTO')
+
+    # OT Number
+    c.setFont('Helvetica-Bold',22); c.setFillColor(RED)
+    c.drawRightString(margin+w-2, y-0.5*cm, str(o['numero']))
+
+    y -= 1.6*cm
+    c.setStrokeColor(GREEN); c.setLineWidth(1.5)
+    c.line(margin, y, margin+w, y)
+    y -= 0.1*cm
+
+    # ── ROW 1: Solicitante / Fecha / Equipo ──
+    y -= 0.55*cm
+    txt('SOLICITANTE:', margin+2, y, 8, True)
+    txt(o['solicitante'] or '', margin+2.5*cm, y, 9)
+    txt('FECHA:', margin+w*0.55, y, 8, True)
+    txt(o['fecha'] or '', margin+w*0.55+1.5*cm, y, 9)
+    txt('EQUIPO:', margin+w*0.75, y, 8, True)
+    txt(o['equipo'] or '', margin+w*0.75+1.5*cm, y, 9)
+    c.setStrokeColor(LGRAY); c.line(margin, y-3, margin+w, y-3)
+
+    # ── ROW 2: Planta / Tipo / Estatus ──
+    y -= 0.7*cm
+    txt('PLANTA:', margin+2, y, 8, True)
+    txt(chk(o['planta'],'TERMOFORMADO')+' TERMOFORMADO', margin+1.8*cm, y, 9)
+    txt(chk(o['planta'],'CONVERSIÓN')+' CONVERSIÓN', margin+5.5*cm, y, 9)
+    txt('TIPO:', margin+w*0.48, y, 8, True)
+    txt(chk(o['tipo'],'CORRECTIVO')+' CORRECTIVO', margin+w*0.48+1*cm, y, 9)
+    txt(chk(o['tipo'],'PREVENTIVO')+' PREVENTIVO', margin+w*0.67, y, 9)
+    txt('ESTATUS:', margin+w*0.83, y, 8, True)
+    txt(chk(o['estatus'],'CERRADA')+' CERRADA', margin+w*0.83+1.5*cm, y, 9)
+    y -= 0.4*cm
+    txt(chk(o['estatus'],'ABIERTA')+' ABIERTA', margin+w*0.83+1.5*cm, y, 9)
+    c.setStrokeColor(LGRAY); c.line(margin, y-3, margin+w, y-3)
+
+    # ── ROW 3: Horas ──
+    y -= 0.7*cm
+    txt('HORA DE INICIO:', margin+2, y, 8, True)
+    txt(o['hora_inicio'] or '_____', margin+3*cm, y, 10, True)
+    txt('HORA DE TÉRMINO:', margin+w*0.35, y, 8, True)
+    txt(o['hora_termino'] or '_____', margin+w*0.35+3.5*cm, y, 10, True)
+    txt('TIEMPO DE PARO:', margin+w*0.67, y, 8, True)
+    txt(o['tiempo_paro'] or '_____', margin+w*0.67+3*cm, y, 10, True, RED)
+    c.setStrokeColor(GREEN); c.setLineWidth(1)
+    y -= 0.3*cm; c.line(margin, y, margin+w, y)
+
+    def text_box(label, value, yy, height=2.2*cm):
+        c.setStrokeColor(BLACK); c.setLineWidth(0.5)
+        c.rect(margin, yy-height, w, height)
+        txt(label+':', margin+4, yy-0.35*cm, 8, True)
+        if value:
+            # wrap text
+            from reportlab.pdfbase.pdfmetrics import stringWidth
+            words = str(value).split()
+            line_txt = ''; line_y = yy-0.7*cm; max_w = w-10
+            for word in words:
+                test = line_txt+(' ' if line_txt else '')+word
+                if stringWidth(test,'Helvetica',9) < max_w:
+                    line_txt = test
+                else:
+                    if line_txt: c.setFont('Helvetica',9); c.setFillColor(BLACK); c.drawString(margin+4, line_y, line_txt)
+                    line_txt = word; line_y -= 0.45*cm
+            if line_txt: c.setFont('Helvetica',9); c.setFillColor(BLACK); c.drawString(margin+4, line_y, line_txt)
+        return yy - height - 0.2*cm
+
+    y -= 0.1*cm
+    y = text_box('DESCRIPCIÓN DE LA FALLA', o.get('descripcion_falla',''), y, 2.5*cm)
+    y = text_box('ACTIVIDAD REALIZADA', o.get('actividad_realizada',''), y, 2.5*cm)
+    y = text_box('REFACCIÓN UTILIZADA', o.get('refaccion',''), y, 1.8*cm)
+    y = text_box('OBSERVACIONES', o.get('observaciones',''), y, 1.6*cm)
+
+    # ── FOTOS ──
+    try:
+        imgs = json.loads(o.get('fotos','[]'))
+        if imgs:
+            y -= 0.2*cm
+            txt('EVIDENCIA FOTOGRÁFICA ('+str(len(imgs))+')', margin+2, y, 8, True, GREEN)
+            y -= 0.2*cm
+            ix = margin
+            for b64 in imgs[:5]:
+                if ',' in b64: b64 = b64.split(',')[1]
+                img_buf = io.BytesIO(base64.b64decode(b64))
+                img = Image(img_buf, width=2.5*cm, height=2.5*cm)
+                img.drawOn(c, ix, y-2.7*cm)
+                ix += 2.7*cm
+            y -= 3*cm
+    except: pass
+
+    # ── FIRMAS ──
+    y -= 0.5*cm
+    sig_w = w/3
+    def draw_sig(label, data, sx):
+        sd = None
+        try:
+            if data: sd = json.loads(data)
+        except: pass
+        c.setStrokeColor(BLACK); c.setLineWidth(0.8)
+        c.line(sx+0.5*cm, y, sx+sig_w-0.5*cm, y)
+        if sd and sd.get('nombre'):
+            txt(sd['nombre'], sx+0.5*cm, y+0.15*cm, 7, True, GREEN)
+            txt('✓ FIRMA ELECTRÓNICA VÁLIDA', sx+0.5*cm, y-0.35*cm, 6, False, GREEN)
+            txt('CERT: '+str(sd.get('certCode','')), sx+0.5*cm, y-0.65*cm, 6)
+            txt(str(sd.get('timestamp','')), sx+0.5*cm, y-0.9*cm, 6)
+        c.setFont('Helvetica-Bold',8); c.setFillColor(BLACK)
+        c.drawCentredString(sx+sig_w/2, y-1.3*cm, label)
+
+    draw_sig('SOLICITANTE', o.get('firma_solicitante'), margin)
+    draw_sig('RECIBE ORDEN DE TRABAJO', o.get('firma_recibe'), margin+sig_w)
+    draw_sig('LIBERACIÓN DE PRODUCCIÓN', o.get('firma_liberacion'), margin+2*sig_w)
+
+    # Footer
+    c.setFont('Helvetica',7); c.setFillColor(colors.HexColor('#999999'))
+    c.drawRightString(margin+w, margin+0.3*cm, 'A9.F4 Rev. 01')
+
+    c.save()
+    buf.seek(0)
+    from flask import send_file
+    return send_file(buf, mimetype='application/pdf',
+                     download_name=f'OT-{o["numero"]}.pdf',
+                     as_attachment=False)
+
+# ══════════════════════════════════════════════════════════
+#  REQUISICIONES DE COMPRA
+# ══════════════════════════════════════════════════════════
+
+def init_req_db():
+    pass  # tabla 'requisiciones' creada por schema.sql en Supabase Studio
+
+init_req_db()
+
+@app.route('/api/requisiciones', methods=['GET'])
+def get_requisiciones():
+    try:
+        rows = sb.select('requisiciones', select='data', order='folio.desc')
+        return jsonify([json.loads(r['data']) for r in rows])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/requisiciones', methods=['POST'])
+def save_requisicion():
+    d = request.json
+    if d.get('id'):
+        existing = sb.select('requisiciones', select='folio', id='eq.' + d['id'])
+        folio = existing[0]['folio'] if existing else None
+    else:
+        folio = None
+    if not folio:
+        todas = sb.select('requisiciones', select='folio')
+        max_folio = max((r['folio'] or 0) for r in todas) if todas else 0
+        folio = max_folio + 1
+        d['id'] = d.get('id') or (str(folio).zfill(4))
+    d['folio'] = folio
+    sb.insert('requisiciones', {
+        'id': d['id'], 'folio': folio, 'fecha': d.get('fecha',''), 'solicitante': d.get('solicitante',''),
+        'planta': d.get('planta',''), 'departamento': d.get('departamento',''), 'tipo': d.get('tipo','Normal'),
+        'data': json.dumps(d, ensure_ascii=False),
+    }, upsert=True, on_conflict='id', return_rows=False)
+    return jsonify({'ok': True, 'id': d['id'], 'folio': folio})
+
+@app.route('/api/requisicion/<rid>/firmar', methods=['POST'])
+def firmar_requisicion(rid):
+    d = request.json
+    key = d.get('key')   # 'realizo', 'reviso', 'aprobo'
+    firma = d.get('firma')
+    if key not in ('realizo','reviso','aprobo') or not firma:
+        return jsonify({'ok': False, 'error': 'Datos inválidos'}), 400
+    rows = sb.select('requisiciones', select='data', id='eq.' + rid)
+    if not rows:
+        return jsonify({'ok': False, 'error': 'No encontrado'}), 404
+    o = json.loads(rows[0]['data'])
+    if 'firmas' not in o or not isinstance(o['firmas'], dict):
+        o['firmas'] = {}
+    o['firmas'][key] = firma
+    sb.update('requisiciones', {'data': json.dumps(o, ensure_ascii=False)}, return_rows=False, id='eq.' + rid)
+    return jsonify({'ok': True})
+
+@app.route('/api/requisicion/<rid>/pdf')
+def requisicion_pdf(rid):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.pdfgen import canvas as pdfcanvas
+
+    rows = sb.select('requisiciones', select='data', id='eq.' + rid)
+    if not rows:
+        return jsonify({'error': 'No encontrado'}), 404
+    o = json.loads(rows[0]['data'])
+
+    buf = io.BytesIO()
+    W, H = letter
+    c = pdfcanvas.Canvas(buf, pagesize=letter)
+    margin = 1.5*cm
+    w = W - 2*margin
+    GREEN = colors.HexColor('#1a5c2a')
+    BLACK = colors.black
+    GRAY  = colors.HexColor('#888888')
+    LGRAY = colors.HexColor('#cccccc')
+
+    def txt(t, x, yy, size=8, bold=False, color=BLACK, align='left'):
+        c.setFont('Helvetica-Bold' if bold else 'Helvetica', size)
+        c.setFillColor(color)
+        if align == 'center':
+            c.drawCentredString(x, yy, str(t or ''))
+        elif align == 'right':
+            c.drawRightString(x, yy, str(t or ''))
+        else:
+            c.drawString(x, yy, str(t or ''))
+
+    y = H - margin
+
+    # ── LOGO ──
+    c.setStrokeColor(GREEN); c.setLineWidth(1.5)
+    c.rect(margin, y-1.2*cm, 2.5*cm, 1.3*cm)
+    c.setFont('Helvetica-Bold', 14); c.setFillColor(GREEN)
+    c.drawString(margin+4, y-0.5*cm, 'ad')
+    c.setFont('Helvetica-Bold', 8); c.setFillColor(GREEN)
+    c.drawString(margin+4, y-0.9*cm, 'CIRA')
+
+    # ── TITLE ──
+    c.setFont('Helvetica-Bold', 13); c.setFillColor(BLACK)
+    c.drawCentredString(W/2, y-0.35*cm, 'Requisición de compra')
+
+    # ── DOC INFO top-right ──
+    folio = str(o.get('folio', '')).zfill(4)
+    bx = margin + w - 4.5*cm
+    c.setStrokeColor(LGRAY); c.setLineWidth(0.5)
+    c.rect(bx, y-1.2*cm, 4.5*cm, 1.3*cm)
+    c.line(bx, y-0.4*cm, bx+4.5*cm, y-0.4*cm)
+    c.line(bx+2.2*cm, y-1.2*cm, bx+2.2*cm, y)
+    txt('No. de Documento', bx+4, y-0.15*cm, 6, True)
+    txt('Revisión', bx+2.2*cm+4, y-0.15*cm, 6, True)
+    txt('REQ-' + folio, bx+4, y-0.75*cm, 9, True, GREEN)
+    txt(o.get('fecha', ''), bx+2.2*cm+4, y-0.75*cm, 7)
+
+    y -= 1.4*cm
+
+    # ── ROW 1: Fecha / Solicitante / Planta / Depto ──
+    c.setStrokeColor(LGRAY); c.setLineWidth(0.5)
+    row_h = 0.55*cm
+    c.rect(margin, y-row_h, w, row_h)
+    cols = [2.5*cm, w*0.35, w*0.55, w*0.75]
+    for cx in cols:
+        c.line(margin+cx, y, margin+cx, y-row_h)
+    txt('FECHA:', margin+4, y-row_h+4, 7, True)
+    txt(o.get('fecha',''), margin+1.2*cm, y-row_h+4, 7)
+    txt('SOLICITANTE:', margin+cols[0]+4, y-row_h+4, 7, True)
+    txt(o.get('solicitante',''), margin+cols[0]+2.3*cm, y-row_h+4, 7)
+    txt('PLANTA:', margin+cols[1]+4, y-row_h+4, 7, True)
+    txt(o.get('planta',''), margin+cols[1]+1.4*cm, y-row_h+4, 7)
+    txt('DEPARTAMENTO:', margin+cols[2]+4, y-row_h+4, 7, True)
+    txt(o.get('departamento',''), margin+cols[2]+2.5*cm, y-row_h+4, 7)
+
+    y -= row_h
+
+    # ── ROW 2: Tipo solicitud ──
+    c.rect(margin, y-row_h, w, row_h)
+    c.line(margin+w*0.55, y, margin+w*0.55, y-row_h)
+    tipo = o.get('tipo', 'Normal')
+    txt('TIPO DE SOLICITUD:', margin+4, y-row_h+4, 7, True)
+    txt('[v]' if tipo=='Normal' else '[ ]', margin+3.8*cm, y-row_h+4, 7)
+    txt('Normal', margin+4.4*cm, y-row_h+4, 7)
+    txt('[v]' if tipo=='Urgente' else '[ ]', margin+5.5*cm, y-row_h+4, 7)
+    txt('Urgente', margin+6.1*cm, y-row_h+4, 7, False, colors.HexColor('#c62828'))
+
+    y -= row_h + 0.1*cm
+
+    # ── TABLE HEADER ──
+    col_widths = [0.55*cm, 1.4*cm, 1.5*cm, 4.5*cm, 3.0*cm, 3.2*cm, 3.3*cm]
+    # adjust last col to fill width
+    col_widths[-1] = w - sum(col_widths[:-1])
+    col_x = [margin]
+    for cw in col_widths[:-1]:
+        col_x.append(col_x[-1] + cw)
+
+    hdr_h = 1.0*cm
+    c.setFillColor(colors.HexColor('#e8f5e9'))
+    c.rect(margin, y-hdr_h, w, hdr_h, fill=1, stroke=1)
+    c.setStrokeColor(LGRAY)
+    for cx in col_x[1:]:
+        c.line(cx, y, cx, y-hdr_h)
+
+    headers = ['#','CANTIDAD','UNIDAD\n(pieza,caja,\nmetros,litros,\nrollos etc.)','DESCRIPCIÓN\n(nombre,modelo,marca,\nNo.catálogo,color,medidas)','APLICACIÓN\nO USO','PROVEEDOR SUGERIDO\n(nombre,contacto,\ntelefono/correo)','PROVEEDOR ALTERNO\n(nombre,contacto,\ntelefono/correo)']
+    c.setFont('Helvetica-Bold', 6); c.setFillColor(BLACK)
+    for i, (htext, cx, cw) in enumerate(zip(headers, col_x, col_widths)):
+        lines = htext.split('\n')
+        ly = y - 0.15*cm
+        for ln in lines:
+            c.drawCentredString(cx + cw/2, ly, ln)
+            ly -= 0.22*cm
+
+    y -= hdr_h
+
+    # ── TABLE ROWS (10 items) ──
+    items = o.get('items', [{}]*10)
+    while len(items) < 10:
+        items.append({})
+
+    row_h_item = 0.7*cm
+    for idx, item in enumerate(items[:10]):
+        ry = y - row_h_item
+        if idx % 2 == 0:
+            c.setFillColor(colors.HexColor('#fafffe'))
+        else:
+            c.setFillColor(colors.white)
+        c.rect(margin, ry, w, row_h_item, fill=1, stroke=0)
+        c.setStrokeColor(LGRAY); c.setLineWidth(0.4)
+        c.rect(margin, ry, w, row_h_item, fill=0, stroke=1)
+        for cx in col_x[1:]:
+            c.line(cx, y, cx, ry)
+
+        c.setFont('Helvetica', 7); c.setFillColor(BLACK)
+        cy = ry + row_h_item*0.35
+        c.drawCentredString(col_x[0]+col_widths[0]/2, cy, str(idx+1))
+        c.drawCentredString(col_x[1]+col_widths[1]/2, cy, str(item.get('cantidad','')))
+        c.drawCentredString(col_x[2]+col_widths[2]/2, cy, str(item.get('unidad','')))
+        c.drawString(col_x[3]+3, cy, str(item.get('descripcion',''))[:55])
+        c.drawString(col_x[4]+3, cy, str(item.get('aplicacion',''))[:30])
+        c.drawString(col_x[5]+3, cy, str(item.get('proveedor',''))[:28])
+        c.drawString(col_x[6]+3, cy, str(item.get('proveedor_alt',''))[:28])
+        y -= row_h_item
+
+    y -= 0.2*cm
+
+    # ── JUSTIFICACIÓN ──
+    c.setStrokeColor(LGRAY); c.setLineWidth(0.5)
+    just_h = 2.0*cm
+    c.rect(margin, y-just_h, w, just_h)
+    txt('JUSTIFICACIÓN (necesidad de la compra del material):', margin+4, y-0.25*cm, 7, True)
+    just_txt = o.get('justificacion', '')
+    c.setFont('Helvetica', 8); c.setFillColor(BLACK)
+    # wrap text
+    words = just_txt.split()
+    line_txt = ''; ly = y - 0.55*cm; max_w = w - 10
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    for word in words:
+        test = line_txt + (' ' if line_txt else '') + word
+        if stringWidth(test, 'Helvetica', 8) < max_w:
+            line_txt = test
+        else:
+            if line_txt: c.drawString(margin+4, ly, line_txt)
+            line_txt = word; ly -= 0.35*cm
+    if line_txt: c.drawString(margin+4, ly, line_txt)
+
+    y -= just_h + 0.5*cm
+
+    # ── FIRMAS ──
+    sig_w = w / 3
+    firmas = o.get('firmas', {})
+    labels = ['Realizó (Nombre y firma)', 'Revisó (Nombre y firma)', 'Aprobó (Nombre y firma)']
+    keys   = ['realizo', 'reviso', 'aprobo']
+    for i, (label, key) in enumerate(zip(labels, keys)):
+        sx = margin + i * sig_w
+        c.setStrokeColor(BLACK); c.setLineWidth(0.8)
+        c.line(sx+0.5*cm, y, sx+sig_w-0.5*cm, y)
+        sig = firmas.get(key, {})
+        if isinstance(sig, dict) and sig.get('nombre'):
+            c.setFont('Helvetica-Bold', 7); c.setFillColor(GREEN)
+            c.drawString(sx+0.5*cm, y+0.15*cm, sig.get('nombre',''))
+            c.setFont('Helvetica', 6); c.setFillColor(GREEN)
+            c.drawString(sx+0.5*cm, y-0.3*cm, '[v] FIRMA ELECTRONICA VALIDA')
+        c.setFont('Helvetica-Bold', 7); c.setFillColor(BLACK)
+        c.drawCentredString(sx+sig_w/2, y-1.1*cm, label)
+
+    # Footer
+    c.setFont('Helvetica', 6); c.setFillColor(GRAY)
+    c.drawRightString(margin+w, margin+0.3*cm, 'A9.F5 Rev. 01')
+
+    c.save(); buf.seek(0)
+    return send_file(buf, mimetype='application/pdf',
+                     download_name=f'REQ-{folio}.pdf',
+                     as_attachment=False)
+
+
+@app.route('/api/refacciones', methods=['GET'])
+def api_get_refacciones():
+    rows = sb.select('refacciones', select='*', order='seccion.asc,nombre.asc')
+    return jsonify(rows)
+
+@app.route('/api/refacciones', methods=['POST'])
+def api_create_refaccion():
+    d = request.json
+    # Numero de parte / QR: solo se genera si el usuario eligio categoria,
+    # clasificacion y proveedor (codigos del catalogo). Es opcional y no
+    # afecta a las refacciones existentes, que conservan numero_parte=''.
+    numero_parte = ''
+    planta_cod = d.get('planta_cod', '')
+    grupo = d.get('grupo', '')
+    categoria_qr = d.get('categoria_qr', '')
+    prov_cod = d.get('proveedor_cod', '')
+    if planta_cod and grupo and categoria_qr and prov_cod:
+        try:
+            numero_parte = _build_numero_parte(planta_cod, grupo, categoria_qr, prov_cod)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 409
+    nueva = sb.insert('refacciones', {
+        'nombre': d.get('nombre',''), 'descripcion': d.get('descripcion',''),
+        'marca': d.get('marca',''), 'modelo': d.get('modelo',''),
+        'categoria': d.get('categoria',''), 'criticidad': d.get('criticidad','MEDIA'),
+        'seccion': d.get('seccion',''), 'cant_min': int(d.get('cant_min',1)),
+        'stock_actual': int(d.get('stock_actual',0)), 'tiempo_entrega': d.get('tiempo_entrega',''),
+        'proveedor': d.get('proveedor',''), 'ubicacion': d.get('ubicacion',''),
+        'costo': float(d.get('costo',0)), 'notas': d.get('notas',''),
+        'foto_b64': d.get('foto_b64',''), 'imagen_url': d.get('imagen_url',''),
+        'numero_parte': numero_parte, 'estante_nombre': d.get('estante_nombre',''),
+    })
+    return jsonify({'ok': True, 'id': nueva[0]['id'], 'numero_parte': numero_parte})
+
+@app.route('/api/refacciones/<int:ref_id>', methods=['PUT'])
+def api_update_refaccion(ref_id):
+    d = request.json
+    # Patch parcial (solo foto_b64)
+    if d.get('_patch'):
+        data = {}
+        for col in ['foto_b64','imagen_url','stock_actual','cant_min']:
+            if col in d: data[col] = d[col]
+        if data:
+            data['updated_at'] = datetime.datetime.now().isoformat()
+            sb.update('refacciones', data, return_rows=False, id='eq.' + str(ref_id))
+        return jsonify({'ok': True})
+
+    # Numero de parte: SOLO se asigna si la refaccion aun no tiene uno.
+    # Si ya tiene, se conserva tal cual (nunca se sobreescribe/regenera).
+    rows = sb.select('refacciones', select='numero_parte,foto_b64', id='eq.' + str(ref_id))
+    row = rows[0] if rows else None
+    numero_parte_actual = row['numero_parte'] if row else ''
+    numero_parte_final = numero_parte_actual
+    if not numero_parte_actual:
+        planta_cod = d.get('planta_cod', '')
+        grupo = d.get('grupo', '')
+        categoria_qr = d.get('categoria_qr', '')
+        prov_cod = d.get('proveedor_cod', '')
+        if planta_cod and grupo and categoria_qr and prov_cod:
+            try:
+                numero_parte_final = _build_numero_parte(planta_cod, grupo, categoria_qr, prov_cod)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 409
+
+    # Foto: si no llega una foto NUEVA en el request, se conserva la que ya
+    # habia en la base de datos (nunca se borra por omision/bug del frontend).
+    foto_b64_final = d.get('foto_b64') or (row['foto_b64'] if row else '')
+
+    sb.update('refacciones', {
+        'nombre': d.get('nombre',''), 'descripcion': d.get('descripcion',''),
+        'marca': d.get('marca',''), 'modelo': d.get('modelo',''),
+        'categoria': d.get('categoria',''), 'criticidad': d.get('criticidad','MEDIA'),
+        'seccion': d.get('seccion',''), 'cant_min': int(d.get('cant_min',1)),
+        'stock_actual': int(d.get('stock_actual',0)), 'tiempo_entrega': d.get('tiempo_entrega',''),
+        'proveedor': d.get('proveedor',''), 'ubicacion': d.get('ubicacion',''),
+        'costo': float(d.get('costo',0)), 'notas': d.get('notas',''),
+        'foto_b64': foto_b64_final, 'imagen_url': d.get('imagen_url',''),
+        'numero_parte': numero_parte_final, 'estante_nombre': d.get('estante_nombre',''),
+        'updated_at': datetime.datetime.now().isoformat(),
+    }, return_rows=False, id='eq.' + str(ref_id))
+    return jsonify({'ok': True, 'numero_parte': numero_parte_final})
+
+@app.route('/api/refacciones/<int:ref_id>', methods=['DELETE'])
+def api_delete_refaccion(ref_id):
+    sb.delete('refacciones', return_rows=False, id='eq.' + str(ref_id))
+    return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------
+# Generación de número de parte / QR (solo para refacciones NUEVAS)
+# Basado en el catálogo de categorías/clasificaciones/proveedores
+# de "base_para__QR.xlsx". No afecta refacciones ya existentes.
+# ---------------------------------------------------------------
+
+_LETRAS_PROVEEDOR = "ABCDEFGHIJKLMN" + "Ñ" + "OPQRSTUVWXYZ"
+
+def _todos_proveedores():
+    """Combina el catalogo fijo de proveedores (qr_catalog.py) con los
+    proveedores agregados dinamicamente desde la app (tabla proveedores_extra)."""
+    combinado = dict(QR_PROVEEDORES)
+    rows = sb.select('proveedores_extra', select='codigo,nombre')
+    for r in rows:
+        combinado[r['codigo']] = r['nombre']
+    return combinado
+
+def _siguiente_codigo_proveedor():
+    """Genera el siguiente codigo libre (letra+numero) siguiendo la misma
+    secuencia del catalogo fijo: A0..A9, B0..B9, ..., N0..N9, Ñ0..Ñ9, O0..O9, ..."""
+    usados = set(QR_PROVEEDORES.keys())
+    rows = sb.select('proveedores_extra', select='codigo')
+    usados |= {r['codigo'] for r in rows}
+    for letra in _LETRAS_PROVEEDOR:
+        for digito in range(10):
+            cod = f"{letra}{digito}"
+            if cod not in usados:
+                return cod
+    raise ValueError("Se agotaron los codigos de proveedor disponibles")
+
+@app.route('/api/proveedores', methods=['POST'])
+def api_add_proveedor():
+    """Registra un proveedor nuevo escrito a mano en el formulario de
+    Nueva Refaccion (opcion 'Agregar proveedor...') para que a partir de
+    ese momento aparezca como opcion normal del catalogo de proveedores,
+    con su propio codigo letra+numero igual que los proveedores fijos."""
+    d = request.get_json(force=True) or {}
+    nombre = (d.get('nombre') or '').strip()
+    if not nombre:
+        return jsonify({'error': 'Falta el nombre del proveedor'}), 400
+    todos = _todos_proveedores()
+    nombre_norm = _norm(nombre)
+    for cod, nom in todos.items():
+        if _norm(nom) == nombre_norm:
+            return jsonify({'ok': True, 'codigo': cod, 'nombre': nom, 'existente': True})
+    codigo = _siguiente_codigo_proveedor()
+    sb.insert('proveedores_extra', {'codigo': codigo, 'nombre': nombre}, return_rows=False)
+    return jsonify({'ok': True, 'codigo': codigo, 'nombre': nombre, 'existente': False})
+
+@app.route('/api/qr-catalogo', methods=['GET'])
+def api_qr_catalogo():
+    proveedores = _todos_proveedores()
+    return jsonify({'grupos': QR_GRUPOS, 'planta': QR_PLANTA, 'proveedores': proveedores})
+
+@app.route('/api/estantes', methods=['GET'])
+def api_list_estantes():
+    rows = sb.select('estantes', select='nombre')
+    nombres = sorted((r['nombre'] for r in rows), key=lambda s: s.lower())
+    return jsonify({'estantes': nombres})
+
+@app.route('/api/estantes', methods=['POST'])
+def api_add_estante():
+    """Registra un nombre de estante escrito a mano (opcion 'Agregar estante...')
+    para que quede disponible como opcion normal la proxima vez."""
+    d = request.get_json(force=True) or {}
+    nombre = (d.get('nombre') or '').strip()
+    if not nombre:
+        return jsonify({'error': 'Falta el nombre del estante'}), 400
+    existentes = sb.select('estantes', select='nombre')
+    for e in existentes:
+        if e['nombre'].strip().lower() == nombre.lower():
+            return jsonify({'ok': True, 'nombre': e['nombre'], 'existente': True})
+    sb.insert('estantes', {'nombre': nombre}, return_rows=False)
+    return jsonify({'ok': True, 'nombre': nombre, 'existente': False})
+
+
+
+def _build_numero_parte(planta_cod, grupo, categoria, prov_cod):
+    """Genera un numero_parte de 8 caracteres:
+       [Planta/Condicion 2][Categoria fija=8][Proveedor 2][Codigo categoria+consecutivo 3]
+       Ejemplo: A08C0241 = A0 (CONDICION NORMAL) + 8 (fijo, Mantenimiento)
+                + C0 (proveedor) + 241 (Electrico|Fusible=240-259, consecutivo 1)
+       El consecutivo se reserva dentro del rango [desde,hasta] de la categoria,
+       compartido entre TODOS los proveedores de esa categoria (asi lo definio
+       generador_QR.xlsx). Se usa el primer numero libre del rango."""
+    if planta_cod not in QR_PLANTA:
+        raise ValueError(f"Codigo de planta/condicion invalido: {planta_cod}")
+    if grupo not in QR_GRUPOS or categoria not in QR_GRUPOS[grupo]:
+        raise ValueError(f"Categoria invalida: {grupo} / {categoria}")
+    if prov_cod not in _todos_proveedores():
+        raise ValueError(f"Codigo de proveedor invalido: {prov_cod}")
+    rango = QR_GRUPOS[grupo][categoria]
+    desde, hasta = rango['desde'], rango['hasta']
+    rows = sb.select('refacciones', select='numero_parte')
+    usados = set()
+    for r in rows:
+        try:
+            np = r['numero_parte'] or ''
+            if len(np) != 8:
+                continue
+            n = int(np[-3:])
+            if desde <= n <= hasta:
+                usados.add(n)
+        except (ValueError, TypeError, IndexError):
+            continue
+    for n in range(desde, hasta + 1):
+        if n not in usados:
+            return f"{planta_cod}{QR_CATEGORIA_FIJA}{prov_cod}{n:03d}"
+    raise ValueError(f"Se agotaron los codigos disponibles para {grupo} / {categoria} ({desde}-{hasta})")
+
+
+
+
+@app.route('/api/refacciones/preview-numero', methods=['GET'])
+def api_preview_numero_parte():
+    planta_cod = request.args.get('planta_cod', '')
+    grupo = request.args.get('grupo', '')
+    categoria = request.args.get('categoria', '')
+    prov_cod = request.args.get('proveedor_cod', '')
+    if not (planta_cod and grupo and categoria and prov_cod):
+        return jsonify({'error': 'Faltan planta_cod, grupo, categoria o proveedor_cod'}), 400
+    try:
+        numero = _build_numero_parte(planta_cod, grupo, categoria, prov_cod)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
+    return jsonify({'numero_parte': numero})
+
+
+@app.route('/api/refacciones/export/excel-a9f2', methods=['GET'])
+def export_refacciones_excel_a9f2():
+    rows = sb.select('refacciones', select='*', order='seccion.asc,nombre.asc')
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.drawing.image import Image as XLImage
+    from datetime import date
+    from PIL import Image as PILImage
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Refacciones A9-F2"
+
+    GREEN_DARK = PatternFill("solid", fgColor="1F5C2E")
+    GREEN_MED  = PatternFill("solid", fgColor="2E7D32")
+    GREEN_LIGHT= PatternFill("solid", fgColor="C8E6C9")
+    RED_FILL   = PatternFill("solid", fgColor="C62828")
+    ORG_FILL   = PatternFill("solid", fgColor="E65100")
+    GRAY_LIGHT = PatternFill("solid", fgColor="F5F5F5")
+    WHITE_FILL = PatternFill("solid", fgColor="FFFFFF")
+    thin = Side(style="thin", color="BDBDBD")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    NCOLS = 13
+    last_col = get_column_letter(NCOLS)
+
+    ws.merge_cells(f"A1:{last_col}1")
+    ws["A1"] = "LISTA DE REFACCIONES — CIRA  |  Formato A9-F2 Rev.01"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+    ws["A1"].fill = GREEN_DARK
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    ws.merge_cells("A2:D2"); ws["A2"] = "Área:  Mantenimiento / Termoformado"
+    ws.merge_cells("E2:H2"); ws["E2"] = "Responsable:  _________________"
+    ws.merge_cells("I2:J2"); ws["I2"] = "Revisión:  01"
+    ws.merge_cells(f"K2:{last_col}2"); ws["K2"] = f"Fecha:  {date.today()}"
+    for cell in ["A2","E2","I2","K2"]:
+        ws[cell].font = Font(bold=True, size=9, color="FFFFFF")
+        ws[cell].fill = GREEN_MED
+        ws[cell].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 18
+
+    headers = ["ITEM","(N) NORMAL\n(C) CRÍTICA","DESCRIPCIÓN","NÚMERO DE PARTE\n/ MODELO","UBICACIÓN",
+               "STATUS","MÁXIMO","MÍNIMO","PUNTO DE\nREORDEN","INVENTARIO\nREAL",
+               "TIEMPO DE ENTREGA\nDEL PROVEEDOR","EQUIPOS A LOS\nQUE PERTENECE","IMAGEN"]
+    col_w = [6, 10, 34, 20, 18, 9, 9, 9, 10, 10, 16, 20, 14]
+    for i, (h, w) in enumerate(zip(headers, col_w), 1):
+        c = ws.cell(row=3, column=i, value=h)
+        c.font = Font(bold=True, color="FFFFFF", size=9)
+        c.fill = GREEN_MED
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[3].height = 28
+
+    sections = {}
+    for r in rows:
+        sections.setdefault(r["seccion"] or "Sin sección", []).append(r)
+
+    row_num = 4
+    num = 1
+    for sec, items in sections.items():
+        ws.merge_cells(f"A{row_num}:{last_col}{row_num}")
+        ws[f"A{row_num}"] = f"  ▌ {sec.upper()}"
+        ws[f"A{row_num}"].font = Font(bold=True, color="FFFFFF", size=10)
+        ws[f"A{row_num}"].fill = GREEN_MED
+        ws.row_dimensions[row_num].height = 18
+        row_num += 1
+
+        for r in items:
+            fill = GRAY_LIGHT if num % 2 == 0 else WHITE_FILL
+            nc = "C" if (r["criticidad"] or "MEDIA") == "ALTA" else "N"
+            if r["stock_actual"] <= 0:
+                status, status_fill = "AGOTADO", RED_FILL
+            elif r["stock_actual"] <= r["cant_min"]:
+                status, status_fill = "BAJO", ORG_FILL
+            else:
+                status, status_fill = "OK", PatternFill("solid", fgColor="2E7D32")
+            num_parte_modelo = r["numero_parte"] or r["modelo"] or ""
+
+            vals = [num, nc, r["nombre"] or "", num_parte_modelo, r["ubicacion"] or "",
+                    status, "", r["cant_min"], "", r["stock_actual"],
+                    r["tiempo_entrega"] or "", r["seccion"] or "", ""]
+            for col, val in enumerate(vals, 1):
+                cell = ws.cell(row=row_num, column=col, value=val)
+                cell.border = border
+                cell.font = Font(size=9)
+                cell.alignment = Alignment(vertical="center", wrap_text=True,
+                                           horizontal="center" if col in [1,2,6,7,8,9,10] else "left")
+                cell.fill = fill
+            ws.cell(row=row_num, column=2).fill = RED_FILL if nc=="C" else PatternFill("solid", fgColor="2E7D32")
+            ws.cell(row=row_num, column=2).font = Font(bold=True, color="FFFFFF", size=9)
+            ws.cell(row=row_num, column=6).fill = status_fill
+            ws.cell(row=row_num, column=6).font = Font(bold=True, color="FFFFFF", size=9)
+
+            ws.row_dimensions[row_num].height = 60
+            # Imagen (foto subida o URL) embebida en la celda de IMAGEN
+            try:
+                raw = None
+                if r["foto_b64"]:
+                    raw = base64.b64decode(r["foto_b64"])
+                elif r["imagen_url"]:
+                    resp = _requests.get(r["imagen_url"], timeout=4)
+                    if resp.status_code == 200:
+                        raw = resp.content
+                if raw:
+                    pil_img = PILImage.open(io.BytesIO(raw)).convert("RGB")
+                    pil_img.thumbnail((80, 80))
+                    img_buf = io.BytesIO()
+                    pil_img.save(img_buf, format="PNG")
+                    img_buf.seek(0)
+                    xl_img = XLImage(img_buf)
+                    ws.add_image(xl_img, f"{last_col}{row_num}")
+            except Exception:
+                pass
+
+            row_num += 1
+            num += 1
+
+    ws.merge_cells(f"A{row_num}:{last_col}{row_num}")
+    ws[f"A{row_num}"] = "  (N) Normal | (C) Crítica | STATUS: OK / BAJO / AGOTADO | MÁXIMO y PUNTO DE REORDEN: pendientes de definir"
+    ws[f"A{row_num}"].font = Font(italic=True, size=8, color="555555")
+    ws[f"A{row_num}"].fill = GREEN_LIGHT
+
+    ws.freeze_panes = "A4"
+
+    buf = io.BytesIO()
+    wb.save(buf); buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"A9-F2_Refacciones_{date.today()}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route('/api/refacciones/export/excel', methods=['GET'])
+def export_refacciones_excel():
+    rows = sb.select('refacciones', select='*', order='seccion.asc,nombre.asc')
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from datetime import date
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Refacciones"
+
+    GREEN_DARK  = PatternFill("solid", fgColor="1F5C2E")
+    GREEN_MED   = PatternFill("solid", fgColor="2E7D32")
+    GREEN_LIGHT = PatternFill("solid", fgColor="C8E6C9")
+    GRAY_LIGHT  = PatternFill("solid", fgColor="F5F5F5")
+    RED_FILL    = PatternFill("solid", fgColor="C62828")
+    ORG_FILL    = PatternFill("solid", fgColor="E65100")
+    GREEN_FILL  = PatternFill("solid", fgColor="2E7D32")
+    thin = Side(style="thin", color="BDBDBD")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Title row
+    ws.merge_cells("A1:M1")
+    ws["A1"] = "LISTA DE REFACCIONES  —  ALMACÉN MANTENIMIENTO  |  CIRA  Termoformado"
+    ws["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+    ws["A1"].fill = GREEN_DARK
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    # Subtitle row
+    ws.merge_cells("A2:D2"); ws["A2"] = f"Área:  Mantenimiento / Termoformado"
+    ws.merge_cells("E2:H2"); ws["E2"] = "Responsable:  _________________"
+    ws.merge_cells("I2:J2"); ws["I2"] = "Revisión:  00"
+    ws.merge_cells("K2:M2"); ws["K2"] = f"Fecha:  {date.today()}"
+    for cell in ["A2","E2","I2","K2"]:
+        ws[cell].font = Font(bold=True, size=9, color="FFFFFF")
+        ws[cell].fill = GREEN_MED
+        ws[cell].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 18
+
+    # Header row
+    headers = ["#","REFACCION / DESCRIPCION","MARCA","MODELO","CATEGORIA","CRITICIDAD","SECCION","CANT.MIN.","STOCK ACT.","T. ENTREGA","PROVEEDOR","UBICACION ALMACEN"]
+    col_w   = [5, 38, 18, 16, 14, 12, 20, 7, 7, 12, 22, 22]
+    for i, (h, w) in enumerate(zip(headers, col_w), 1):
+        c = ws.cell(row=3, column=i, value=h)
+        c.font = Font(bold=True, color="FFFFFF", size=9)
+        c.fill = GREEN_MED
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[3].height = 30
+
+    # Group by section
+    sections = {}
+    for r in rows:
+        sec = r["seccion"] or "Sin sección"
+        sections.setdefault(sec, []).append(r)
+
+    row_num = 4
+    num = 1
+    for sec, items in sections.items():
+        # Section header
+        ws.merge_cells(f"A{row_num}:M{row_num}")
+        ws[f"A{row_num}"] = f"  ▌ {sec.upper()}"
+        ws[f"A{row_num}"].font = Font(bold=True, color="FFFFFF", size=10)
+        ws[f"A{row_num}"].fill = GREEN_MED
+        ws[f"A{row_num}"].alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[row_num].height = 18
+        row_num += 1
+
+        for r in items:
+            fill = GRAY_LIGHT if num % 2 == 0 else PatternFill("solid", fgColor="FFFFFF")
+            crit = r["criticidad"] or "MEDIA"
+            crit_fill = RED_FILL if crit=="ALTA" else (ORG_FILL if crit=="MEDIA" else GREEN_FILL)
+
+            vals = [num, r["nombre"], r["marca"] or "", r["modelo"] or "",
+                    r["categoria"] or "", crit, r["seccion"] or "",
+                    r["cant_min"], r["stock_actual"],
+                    r["tiempo_entrega"] or "", r["proveedor"] or "",
+                    r["ubicacion"] or ""]
+
+            for col, val in enumerate(vals, 1):
+                cell = ws.cell(row=row_num, column=col, value=val)
+                cell.border = border
+                cell.font = Font(size=9)
+                cell.alignment = Alignment(vertical="center", wrap_text=True,
+                                           horizontal="center" if col in [1,8,9] else "left")
+                if col == 6:
+                    cell.fill = crit_fill
+                    cell.font = Font(bold=True, color="FFFFFF", size=9)
+                else:
+                    cell.fill = fill
+
+            # Stock bajo warning
+            if r["stock_actual"] <= r["cant_min"]:
+                ws.cell(row=row_num, column=9).font = Font(bold=True, color="C62828", size=9)
+
+            ws.row_dimensions[row_num].height = 16
+            row_num += 1
+            num += 1
+
+    # Footer
+    ws.merge_cells(f"A{row_num}:M{row_num}")
+    ws[f"A{row_num}"] = "  🔴 ALTA = Paro de producción    |    🟡 MEDIA = Afecta eficiencia    |    🟢 BAJA = Preventivo"
+    ws[f"A{row_num}"].font = Font(italic=True, size=8, color="555555")
+    ws[f"A{row_num}"].fill = GREEN_LIGHT
+
+    ws.freeze_panes = "A4"
+
+    buf = io.BytesIO()
+    wb.save(buf); buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"Lista_Refacciones_{date.today()}.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route('/api/refacciones/export/pdf', methods=['GET'])
+def export_refacciones_pdf():
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+    from datetime import date
+
+    rows = sb.select('refacciones', select='*', order='seccion.asc,nombre.asc')
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=8*mm, rightMargin=8*mm,
+                            topMargin=8*mm, bottomMargin=8*mm)
+
+    GREEN_DARK  = colors.HexColor('#1F5C2E')
+    GREEN_MED   = colors.HexColor('#2E7D32')
+    GREEN_LIGHT = colors.HexColor('#C8E6C9')
+    RED   = colors.HexColor('#C62828')
+    ORG   = colors.HexColor('#E65100')
+    GRAY  = colors.HexColor('#F5F5F5')
+    WHITE = colors.white
+
+    def ps(size=7, bold=False, color=colors.black, align=TA_LEFT):
+        return ParagraphStyle('x', fontSize=size, leading=size+2,
+                              fontName='Helvetica-Bold' if bold else 'Helvetica',
+                              textColor=color, alignment=align)
+
+    crit_col = {'ALTA': RED, 'MEDIA': ORG, 'BAJA': GREEN_MED}
+    CW = [7*mm,55*mm,30*mm,18*mm,16*mm,10*mm,10*mm,14*mm,24*mm,24*mm,14*mm,30*mm]
+
+    sections = {}
+    for r in rows:
+        sections.setdefault(r['seccion'] or 'Sin seccion', []).append(r)
+
+    story = []
+
+    # ---- Titulo ----
+    t = Table([[Paragraph('LISTA DE REFACCIONES — ALMACÉN MANTENIMIENTO | CIRA Termoformado',
+                          ps(12, True, WHITE, TA_CENTER))]],
+              colWidths=[sum(CW)])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_DARK),
+                           ('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5)]))
+    story.append(t)
+
+    s = Table([[f'Área: Mantenimiento / Termoformado',
+                'Responsable: _________________',
+                'Revisión: 00',
+                f'Fecha: {date.today()}']],
+              colWidths=[sum(CW)*0.32, sum(CW)*0.32, sum(CW)*0.16, sum(CW)*0.20])
+    s.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_MED),
+                           ('TEXTCOLOR',(0,0),(-1,-1),WHITE),
+                           ('FONTSIZE',(0,0),(-1,-1),7.5),
+                           ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+                           ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(s)
+    story.append(Spacer(1,2*mm))
+
+    num = 1
+    HDRS = ['#','REFACCIÓN / DESCRIPCIÓN','MARCA / MODELO','CATEGORÍA','CRITICIDAD',
+            'CANT.\nMÍN.','STOCK\nACT.','T. ENTREGA','PROVEEDOR SUGERIDO','UBICACIÓN\nALMACÉN',
+            'COSTO\nAPROX $','NOTAS']
+
+    for sec, items in sections.items():
+        sh = Table([[Paragraph(f'  ▌ {sec.upper()}', ps(8, True, WHITE))]], colWidths=[sum(CW)])
+        sh.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_MED),
+                                ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+        story.append(sh)
+
+        tdata = [[Paragraph(h, ps(7,True,WHITE,TA_CENTER)) for h in HDRS]]
+        tstyle = [
+            ('BACKGROUND',(0,0),(-1,0),GREEN_MED),
+            ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#BDBDBD')),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('TOPPADDING',(0,0),(-1,-1),2),('BOTTOMPADDING',(0,0),(-1,-1),2),
+        ]
+
+        for i, r in enumerate(items, 1):
+            low = r['stock_actual'] <= r['cant_min']
+            cc  = crit_col.get(r['criticidad'] or 'MEDIA', ORG)
+            bg  = GRAY if i % 2 == 0 else WHITE
+            marca_modelo = ' / '.join([x for x in [r['marca'] or '', r['modelo'] or ''] if x])
+            costo_txt = f"${r['costo']:,.0f}" if r['costo'] else ''
+            tdata.append([
+                Paragraph(str(num),           ps(7,align=TA_CENTER)),
+                Paragraph(str(r['nombre'] or ''),     ps(7)),
+                Paragraph(marca_modelo,               ps(7)),
+                Paragraph(str(r['categoria'] or ''),  ps(7)),
+                Paragraph(str(r['criticidad'] or ''), ps(7,True,WHITE,TA_CENTER)),
+                Paragraph(str(r['cant_min']),          ps(7,align=TA_CENTER)),
+                Paragraph(str(r['stock_actual']),      ps(7,bold=low,color=RED if low else colors.black,align=TA_CENTER)),
+                Paragraph(str(r['tiempo_entrega'] or ''), ps(7)),
+                Paragraph(str(r['proveedor'] or ''),   ps(7)),
+                Paragraph(str(r['ubicacion'] or ''),   ps(7)),
+                Paragraph(costo_txt,                   ps(7,align=TA_RIGHT)),
+                Paragraph(str(r['notas'] or ''),       ps(7)),
+            ])
+            tstyle += [('BACKGROUND',(0,i),(-1,i),bg),
+                       ('BACKGROUND',(4,i),(4,i),cc)]
+            num += 1
+
+        dt = Table(tdata, colWidths=CW, repeatRows=1)
+        dt.setStyle(TableStyle(tstyle))
+        story.append(dt)
+        story.append(Spacer(1,2*mm))
+
+    # Footer
+    ft = Table([[Paragraph('🔴 ALTA = Paro de producción    |    🟡 MEDIA = Afecta eficiencia    |    🟢 BAJA = Preventivo    |    ✓ = Identificado en almacén',
+                            ps(6, color=colors.HexColor('#555555')))]],
+               colWidths=[sum(CW)])
+    ft.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_LIGHT),
+                            ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(ft)
+    story.append(Spacer(1,6*mm))
+
+    firma = Table([['Elaboró:', '', '', '', 'Revisó:', '', '', '', 'Autorizó:', '', '', '']],
+                  colWidths=[sum(CW)/12]*12)
+    firma.setStyle(TableStyle([
+        ('FONTSIZE',(0,0),(-1,-1),8),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+        ('LINEBELOW',(1,0),(3,0),0.5,colors.grey),
+        ('LINEBELOW',(5,0),(7,0),0.5,colors.grey),
+        ('LINEBELOW',(9,0),(11,0),0.5,colors.grey),
+    ]))
+    story.append(firma)
+
+    doc.build(story)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"Lista_Refacciones_{date.today()}.pdf",
+                     mimetype='application/pdf')
+
+@app.route('/api/refacciones/export/pdf-a9f2', methods=['GET'])
+def export_refacciones_pdf_a9f2():
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from datetime import date
+
+    rows = sb.select('refacciones', select='*', order='seccion.asc,nombre.asc')
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=8*mm, rightMargin=8*mm,
+                            topMargin=8*mm, bottomMargin=8*mm)
+
+    GREEN_DARK  = colors.HexColor('#1F5C2E')
+    GREEN_MED   = colors.HexColor('#2E7D32')
+    GREEN_LIGHT = colors.HexColor('#C8E6C9')
+    RED   = colors.HexColor('#C62828')
+    ORG   = colors.HexColor('#E65100')
+    GRAY  = colors.HexColor('#F5F5F5')
+    WHITE = colors.white
+
+    def ps(size=6.5, bold=False, color=colors.black, align=TA_LEFT):
+        return ParagraphStyle('x', fontSize=size, leading=size+2,
+                              fontName='Helvetica-Bold' if bold else 'Helvetica',
+                              textColor=color, alignment=align)
+
+    # Formato oficial A9-F2 "REFACCIONES" Rev.01
+    CW = [8*mm,10*mm,44*mm,26*mm,22*mm,14*mm,12*mm,12*mm,16*mm,16*mm,18*mm,26*mm,18*mm]
+    HDRS = ['ITEM','(N) NORMAL\n(C) CRÍTICA','DESCRIPCIÓN','NÚMERO DE PARTE\n/ MODELO','UBICACIÓN',
+            'STATUS','MÁXIMO','MÍNIMO','PUNTO DE\nREORDEN','INVENTARIO\nREAL',
+            'TIEMPO DE ENTREGA\nDEL PROVEEDOR','EQUIPOS A LOS\nQUE PERTENECE','IMAGEN']
+
+    def get_imagen_flowable(r):
+        """Intenta obtener la imagen de la refaccion (foto subida o URL) como
+        thumbnail para la tabla. Si falla o no hay imagen, regresa celda vacia."""
+        try:
+            raw = None
+            if r['foto_b64']:
+                raw = base64.b64decode(r['foto_b64'])
+            elif r['imagen_url']:
+                resp = _requests.get(r['imagen_url'], timeout=4)
+                if resp.status_code == 200:
+                    raw = resp.content
+            if raw:
+                img = RLImage(io.BytesIO(raw), width=15*mm, height=15*mm)
+                img.hAlign = 'CENTER'
+                return img
+        except Exception:
+            pass
+        return ''
+
+    def status_de(r):
+        if r['stock_actual'] <= 0:
+            return 'AGOTADO', RED
+        if r['stock_actual'] <= r['cant_min']:
+            return 'BAJO', ORG
+        return 'OK', GREEN_MED
+
+    sections = {}
+    for r in rows:
+        sections.setdefault(r['seccion'] or 'Sin seccion', []).append(r)
+
+    story = []
+
+    # ---- Titulo (formato A9-F2) ----
+    t = Table([[Paragraph('LISTA DE REFACCIONES — CIRA  |  Formato A9-F2 Rev.01',
+                          ps(12, True, WHITE, TA_CENTER))]],
+              colWidths=[sum(CW)])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_DARK),
+                           ('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5)]))
+    story.append(t)
+
+    s = Table([[f'Área: Mantenimiento / Termoformado',
+                'Responsable: _________________',
+                'Revisión: 01',
+                f'Fecha: {date.today()}']],
+              colWidths=[sum(CW)*0.32, sum(CW)*0.32, sum(CW)*0.16, sum(CW)*0.20])
+    s.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_MED),
+                           ('TEXTCOLOR',(0,0),(-1,-1),WHITE),
+                           ('FONTSIZE',(0,0),(-1,-1),7.5),
+                           ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+                           ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(s)
+    story.append(Spacer(1,2*mm))
+
+    num = 1
+    for sec, items in sections.items():
+        sh = Table([[Paragraph(f'  ▌ {sec.upper()}', ps(8, True, WHITE))]], colWidths=[sum(CW)])
+        sh.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_MED),
+                                ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+        story.append(sh)
+
+        tdata = [[Paragraph(h, ps(6.5,True,WHITE,TA_CENTER)) for h in HDRS]]
+        tstyle = [
+            ('BACKGROUND',(0,0),(-1,0),GREEN_MED),
+            ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#BDBDBD')),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('TOPPADDING',(0,0),(-1,-1),2),('BOTTOMPADDING',(0,0),(-1,-1),2),
+        ]
+
+        for i, r in enumerate(items, 1):
+            bg = GRAY if i % 2 == 0 else WHITE
+            nc = 'C' if (r['criticidad'] or 'MEDIA') == 'ALTA' else 'N'
+            nc_color = RED if nc == 'C' else GREEN_MED
+            num_parte_modelo = r['numero_parte'] or r['modelo'] or ''
+            status_txt, status_color = status_de(r)
+            tdata.append([
+                Paragraph(str(num),                    ps(align=TA_CENTER)),
+                Paragraph(nc,                           ps(6.5,True,nc_color,TA_CENTER)),
+                Paragraph(str(r['nombre'] or ''),       ps()),
+                Paragraph(str(num_parte_modelo),        ps()),
+                Paragraph(str(r['ubicacion'] or ''),    ps()),
+                Paragraph(status_txt,                   ps(6.5,True,status_color,TA_CENTER)),
+                Paragraph('',                           ps(align=TA_CENTER)),  # MAXIMO: no se rastrea aun
+                Paragraph(str(r['cant_min']),           ps(align=TA_CENTER)),
+                Paragraph('',                           ps(align=TA_CENTER)),  # PUNTO DE REORDEN: no se rastrea aun
+                Paragraph(str(r['stock_actual']),       ps(6.5,True, RED if status_txt!='OK' else colors.black, TA_CENTER)),
+                Paragraph(str(r['tiempo_entrega'] or ''), ps()),
+                Paragraph(str(r['seccion'] or ''),      ps()),
+                get_imagen_flowable(r),
+            ])
+            tstyle += [('BACKGROUND',(0,i),(-1,i),bg)]
+            num += 1
+
+        dt = Table(tdata, colWidths=CW, repeatRows=1)
+        dt.setStyle(TableStyle(tstyle))
+        story.append(dt)
+        story.append(Spacer(1,2*mm))
+
+    # Footer
+    ft = Table([[Paragraph('(N) Normal  |  (C) Crítica  |  STATUS: OK = stock suficiente, BAJO = por debajo del mínimo, AGOTADO = sin existencia  |  MÁXIMO y PUNTO DE REORDEN: pendientes de definir',
+                            ps(6, color=colors.HexColor('#555555')))]],
+               colWidths=[sum(CW)])
+    ft.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),GREEN_LIGHT),
+                            ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(ft)
+    story.append(Spacer(1,6*mm))
+
+    firma = Table([['Elaboró:', '', '', '', 'Revisó:', '', '', '', 'Autorizó:', '', '', '', '']],
+                  colWidths=[sum(CW)/13]*13)
+    firma.setStyle(TableStyle([
+        ('FONTSIZE',(0,0),(-1,-1),8),
+        ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+        ('LINEBELOW',(1,0),(3,0),0.5,colors.grey),
+        ('LINEBELOW',(5,0),(7,0),0.5,colors.grey),
+        ('LINEBELOW',(9,0),(11,0),0.5,colors.grey),
+    ]))
+    story.append(firma)
+
+    doc.build(story)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"A9-F2_Refacciones_{date.today()}.pdf",
+                     mimetype='application/pdf')
+
+@app.route('/api/refacciones/export/pdf-pedido', methods=['GET'])
+def export_refacciones_pdf_pedido():
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from datetime import date
+
+    todas = sb.select('refacciones', select='*', order='proveedor.asc,nombre.asc')
+    rows = [r for r in todas if (r.get('stock_actual') or 0) < (r.get('cant_min') or 0)]
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                            leftMargin=8*mm, rightMargin=8*mm,
+                            topMargin=8*mm, bottomMargin=8*mm)
+
+    RED_DARK  = colors.HexColor('#B71C1C')
+    RED_MED   = colors.HexColor('#C62828')
+    RED_LIGHT = colors.HexColor('#FFCDD2')
+    ORG   = colors.HexColor('#E65100')
+    GREEN_MED = colors.HexColor('#2E7D32')
+    GRAY  = colors.HexColor('#F5F5F5')
+    WHITE = colors.white
+
+    def ps(size=7, bold=False, color=colors.black, align=TA_LEFT):
+        return ParagraphStyle('x', fontSize=size, leading=size+2,
+                              fontName='Helvetica-Bold' if bold else 'Helvetica',
+                              textColor=color, alignment=align)
+
+    crit_col = {'ALTA': RED_MED, 'MEDIA': ORG, 'BAJA': GREEN_MED}
+    CW = [7*mm,70*mm,25*mm,20*mm,16*mm,16*mm,16*mm,20*mm,24*mm,34*mm]
+
+    grupos = {}
+    for r in rows:
+        grupos.setdefault(r['proveedor'] or 'Sin proveedor asignado', []).append(r)
+
+    story = []
+    t = Table([[Paragraph('LISTA DE REFACCIONES A PEDIR — STOCK POR DEBAJO DEL MÍNIMO | CIRA',
+                          ps(12, True, WHITE, TA_CENTER))]], colWidths=[sum(CW)])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),RED_DARK),
+                           ('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5)]))
+    story.append(t)
+
+    s = Table([[f'Total de refacciones a pedir: {len(rows)}',
+                'Solicitado por: _________________',
+                f'Fecha: {date.today()}']],
+              colWidths=[sum(CW)//3, sum(CW)//3, sum(CW)-2*(sum(CW)//3)])
+    s.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),RED_MED),
+                           ('TEXTCOLOR',(0,0),(-1,-1),WHITE),
+                           ('FONTSIZE',(0,0),(-1,-1),7.5),
+                           ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),
+                           ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(s)
+    story.append(Spacer(1,2*mm))
+
+    if not rows:
+        story.append(Paragraph('✅ No hay refacciones por debajo del stock mínimo en este momento.', ps(10, True, GREEN_MED)))
+    num = 1
+    HDRS = ['#','REFACCION / DESCRIPCION','MARCA','MODELO','CRITICIDAD','MIN','STOCK','A PEDIR','ENTREGA','UBICACION']
+
+    for prov, items in grupos.items():
+        sh = Table([[Paragraph(f'  🛒 PROVEEDOR: {prov.upper()}', ps(8, True, WHITE))]], colWidths=[sum(CW)])
+        sh.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),RED_MED),
+                                ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+        story.append(sh)
+
+        tdata = [[Paragraph(h, ps(7,True,WHITE,TA_CENTER)) for h in HDRS]]
+        tstyle = [
+            ('BACKGROUND',(0,0),(-1,0),RED_MED),
+            ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#BDBDBD')),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('TOPPADDING',(0,0),(-1,-1),2),('BOTTOMPADDING',(0,0),(-1,-1),2),
+        ]
+        for i, r in enumerate(items, 1):
+            cc = crit_col.get(r['criticidad'] or 'MEDIA', ORG)
+            bg = GRAY if i % 2 == 0 else WHITE
+            a_pedir = max(1, r['cant_min'] - r['stock_actual'])
+            tdata.append([
+                Paragraph(str(num),                    ps(7,align=TA_CENTER)),
+                Paragraph(str(r['nombre'] or ''),       ps(7)),
+                Paragraph(str(r['marca'] or ''),        ps(7)),
+                Paragraph(str(r['modelo'] or ''),       ps(7)),
+                Paragraph(str(r['criticidad'] or ''),   ps(7,True,WHITE,TA_CENTER)),
+                Paragraph(str(r['cant_min']),           ps(7,align=TA_CENTER)),
+                Paragraph(str(r['stock_actual']),       ps(7,True,RED_MED,TA_CENTER)),
+                Paragraph(str(a_pedir),                 ps(8,True,RED_DARK,TA_CENTER)),
+                Paragraph(str(r['tiempo_entrega'] or ''), ps(7)),
+                Paragraph(str(r['ubicacion'] or ''),    ps(7)),
+            ])
+            tstyle += [('BACKGROUND',(0,i),(-1,i),bg),
+                       ('BACKGROUND',(4,i),(4,i),cc)]
+            num += 1
+
+        dt = Table(tdata, colWidths=CW, repeatRows=1)
+        dt.setStyle(TableStyle(tstyle))
+        story.append(dt)
+        story.append(Spacer(1,2*mm))
+
+    ft = Table([[Paragraph('"A PEDIR" = Cant. Mínima − Stock Actual (mínimo 1)  |  🔴 ALTA = Paro de producción  |  🟡 MEDIA  |  🟢 BAJA',
+                            ps(6, color=colors.HexColor('#555555')))]], colWidths=[sum(CW)])
+    ft.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),RED_LIGHT),
+                            ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))
+    story.append(ft)
+
+    doc.build(story)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True,
+                     download_name=f"Lista_Para_Pedir_{date.today()}.pdf",
+                     mimetype='application/pdf')
+
+
+
+@app.route("/imprimir", methods=["POST"])
+def imprimir_proxy():
+    """Proxy: reenvía peticiones de la PWA a la Pi (100.87.53.113:5000)"""
+    try:
+        body = request.get_json(silent=True)
+        response = requests.post(
+            "https://100.87.53.113:5000/imprimir",
+            json=body,
+            verify=False,
+            timeout=10
+        )
+        return response.json(), response.status_code
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"No se pudo conectar con la impresora: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 3000)), debug=False)
