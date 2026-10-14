@@ -5,87 +5,239 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Etiquetas de Productos - CIRA</title>
 <link rel="icon" href="/cira-icon-web.svg">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#0f4c9c">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --azul: #1565c0;
+    --azul-osc: #0f4c9c;
+    --amarillo: #ffd400;
+    --tinta: #1a2233;
+    --gris: #5b6675;
+    --linea: #d5dde3;
+    --fondo: #eef2f3;
+    --papel: #ffffff;
+    --ok: #1b7a3a;
+    --error: #c62828;
+    --cond: 'Barlow Condensed', 'Arial Narrow', Arial, sans-serif;
+    --texto: 'Barlow', 'Segoe UI', Arial, sans-serif;
+  }
   * { box-sizing: border-box; }
-  body { font-family: Segoe UI, Arial, sans-serif; background: #f2f4f7; margin: 0; padding: 20px; color: #222; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .subtitulo { color: #666; margin: 0 0 20px; font-size: 13px; }
-  .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 18px; max-width: 1100px; }
-  .panel h2 { font-size: 15px; margin: 0 0 10px; }
-  .ayuda { font-size: 12px; color: #777; margin: 6px 0 10px; }
-  button { background: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 5px; font-size: 13px; cursor: pointer; margin: 0 8px 6px 0; }
-  button:hover { background: #1d4ed8; }
-  button.secundario { background: #6b7280; }
-  button.secundario:hover { background: #4b5563; }
-  button.peligro { background: #dc2626; padding: 4px 8px; font-size: 12px; margin: 0; }
-  button.peligro:hover { background: #b91c1c; }
-  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
-  th, td { border: 1px solid #e0e0e0; padding: 4px 6px; text-align: left; }
-  th { background: #f8f9fb; }
-  td input { width: 100%; border: 1px solid #ddd; border-radius: 3px; padding: 4px; font-size: 13px; }
-  input, select { font-size: 13px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
-  .fila-controles { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; }
-  .lugares { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 600px; margin-top: 8px; }
-  .lugares label { font-size: 12px; color: #555; display: block; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--fondo); color: var(--tinta); font: 15px/1.45 var(--texto); }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--amarillo); outline-offset: 2px; }
+
+  /* ---------- Encabezado + franja de precaución ---------- */
+  .barra {
+    background: var(--azul-osc);
+    color: #fff;
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .barra img { height: 44px; width: auto; background: #fff; border-radius: 8px; padding: 4px 6px; }
+  .barra h1 { font: 700 26px/1.05 var(--cond); margin: 0; letter-spacing: .3px; }
+  .barra p { margin: 2px 0 0; font-size: 13px; color: #c9d8ee; }
+  .franja {
+    height: 12px;
+    background: repeating-linear-gradient(-45deg, var(--amarillo) 0 18px, var(--tinta) 18px 36px);
+  }
+
+  /* ---------- Distribución ---------- */
+  .contenido {
+    max-width: 1240px; margin: 0 auto; padding: 24px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 28px; align-items: start;
+  }
+  .controles { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+  .lado-hoja { position: sticky; top: 20px; }
+
+  .paso { background: var(--papel); border: 1px solid var(--linea); border-radius: 6px; padding: 18px 20px 20px; }
+  .paso-tit { display: flex; align-items: baseline; gap: 10px; margin: 0 0 4px; }
+  .paso-num {
+    flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--tinta); color: var(--amarillo);
+    font: 700 17px/28px var(--cond); text-align: center;
+  }
+  .paso h2 { font: 700 21px/1.1 var(--cond); margin: 0; }
+  .ayuda { font-size: 13px; color: var(--gris); margin: 2px 0 14px 38px; }
+
+  /* ---------- Botones ---------- */
+  .btn {
+    border: 0; border-radius: 4px; padding: 9px 16px; cursor: pointer;
+    font-weight: 600; font-size: 14px; background: #e3e9ee; color: var(--tinta);
+  }
+  .btn:hover { background: #d4dde4; }
+  .btn-primario { background: var(--azul); color: #fff; }
+  .btn-primario:hover { background: var(--azul-osc); }
+  .btn-imprimir {
+    width: 100%; padding: 14px 18px; font: 700 21px/1 var(--cond); letter-spacing: .4px;
+    background: var(--amarillo); color: var(--tinta); border: 2px solid var(--tinta); border-radius: 4px;
+    box-shadow: 0 3px 0 var(--tinta);
+  }
+  .btn-imprimir:hover { background: #ffe14d; }
+  .btn-imprimir:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--tinta); }
+  .acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+  /* ---------- Catálogo ---------- */
+  .tabla-scroll { overflow-x: auto; border: 1px solid var(--linea); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px; }
+  th { text-align: left; font-weight: 600; font-size: 13px; color: var(--gris); background: #f6f8f9; padding: 8px 8px; border-bottom: 1px solid var(--linea); }
+  td { padding: 4px 6px; border-bottom: 1px solid #edf1f3; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td input { width: 100%; border: 1px solid transparent; border-radius: 3px; padding: 6px 6px; background: transparent; }
+  td input:hover { border-color: var(--linea); }
+  td input:focus { border-color: var(--azul); background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(21,101,192,.18); }
+  td:last-child { width: 1%; white-space: nowrap; }
+  button.peligro { border: 0; background: none; color: var(--error); font-size: 13px; font-weight: 600; padding: 6px 8px; cursor: pointer; border-radius: 3px; }
+  button.peligro:hover { background: #fdecec; }
+
+  /* ---------- Arma la hoja ---------- */
+  .selector-modo { display: inline-flex; border: 2px solid var(--tinta); border-radius: 4px; overflow: hidden; margin-bottom: 14px; }
+  .selector-modo label { position: relative; cursor: pointer; }
+  .selector-modo input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+  .selector-modo span { display: block; padding: 8px 16px; font-weight: 600; font-size: 14px; }
+  .selector-modo input:checked + span { background: var(--tinta); color: var(--amarillo); }
+  .selector-modo input:focus-visible + span { outline: 3px solid var(--amarillo); outline-offset: -3px; }
+  #selIgual { width: 100%; max-width: 560px; }
+  select { padding: 9px 10px; border: 1px solid #b9c4cd; border-radius: 4px; background: #fff; }
+  .lugares { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; max-width: 560px; border: 2px dashed #9aa6b2; border-radius: 4px; }
+  .lugares > div { padding: 10px 12px; border-right: 2px dashed #9aa6b2; border-bottom: 2px dashed #9aa6b2; }
+  .lugares > div:nth-child(2n) { border-right: 0; }
+  .lugares > div:nth-last-child(-n+2) { border-bottom: 0; }
+  .lugares label { display: block; font-size: 12px; color: var(--gris); margin-bottom: 4px; }
   .lugares select { width: 100%; }
-  #vista { width: 100%; max-width: 408px; border: 1px solid #ccc; background: #fff; display: block; }
-  .estado { font-size: 13px; margin-top: 6px; }
-  .tabla-scroll { overflow-x: auto; }
-  @media (max-width: 600px) { body { padding: 12px; } .lugares { grid-template-columns: 1fr; } }
+  .hojas-fila { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .contador { display: inline-flex; border: 1px solid #b9c4cd; border-radius: 4px; overflow: hidden; background: #fff; }
+  .contador button { border: 0; background: #f0f3f5; width: 38px; font-size: 20px; cursor: pointer; }
+  .contador button:hover { background: #e3e9ee; }
+  .contador input { width: 64px; text-align: center; border: 0; border-left: 1px solid #b9c4cd; border-right: 1px solid #b9c4cd; padding: 8px 4px; font-weight: 600; }
+  .total { font-size: 13px; color: var(--gris); }
+
+  /* ---------- Hoja (vista previa) ---------- */
+  .hoja-marco { background: #d9e0e4; border-radius: 6px; padding: 18px; }
+  #vista { width: 100%; height: auto; display: block; background: #fff; box-shadow: 0 1px 2px rgba(26,34,51,.18), 0 8px 18px rgba(26,34,51,.12); }
+  .hoja-pie { font-size: 12px; color: var(--gris); margin: 10px 2px 0; }
+
+  /* ---------- Imprimir ---------- */
+  .imprimir { margin-top: 16px; background: var(--papel); border: 1px solid var(--linea); border-radius: 6px; padding: 16px; }
+  .estado { font-size: 14px; margin-top: 10px; font-weight: 500; }
+  .estado:empty { display: none; }
+  .estado:not(:empty) { padding: 8px 10px; border-left: 4px solid currentColor; background: #f6f8f9; }
+  details.config { margin-top: 12px; font-size: 13px; }
+  details.config summary { cursor: pointer; color: var(--gris); }
+  details.config label { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  details.config input { padding: 7px 8px; border: 1px solid #b9c4cd; border-radius: 4px; width: 170px; }
+  .secundarias { display: flex; gap: 8px; margin-top: 10px; }
+  .secundarias .btn { flex: 1; }
+
+  @media (max-width: 960px) {
+    .contenido { grid-template-columns: 1fr; padding: 16px; gap: 20px; }
+    .lado-hoja { position: static; }
+    .hoja-marco { max-width: 440px; margin: 0 auto; }
+    .imprimir { position: sticky; bottom: 0; z-index: 5; border-radius: 6px 6px 0 0; box-shadow: 0 -6px 16px rgba(26,34,51,.12); }
+  }
+  @media (max-width: 560px) {
+    .barra { padding: 12px 16px; }
+    .barra h1 { font-size: 22px; }
+    .barra p { display: none; }
+    .lugares { grid-template-columns: 1fr; }
+    .lugares > div { border-right: 0; border-bottom: 2px dashed #9aa6b2; }
+    .lugares > div:last-child { border-bottom: 0; }
+    .ayuda { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 
-<h1>Etiquetas de Productos CIRA</h1>
-<p class="subtitulo">Hoja de 4×6" con 6 etiquetas de 2×2" — impresión directa a la Zebra por la Raspberry Pi.</p>
+<header class="barra">
+  <img src="/cira-icon-web.svg" alt="CIRA" onerror="this.style.display='none'">
+  <div>
+    <h1>Etiquetas de productos</h1>
+    <p>Hoja de 4×6" con 6 etiquetas de 2×2" para la Zebra</p>
+  </div>
+</header>
+<div class="franja" aria-hidden="true"></div>
 
-<div class="panel">
-  <h2>1. Catálogo de productos</h2>
-  <p class="ayuda">Se guarda en este dispositivo. Usa Exportar/Importar para pasarlo a otro equipo.</p>
-  <div class="tabla-scroll">
-  <table>
-    <thead><tr><th>Línea 1</th><th>Línea 2</th><th>Talla</th><th>Color</th><th>Código de barras</th><th></th></tr></thead>
-    <tbody id="tablaProductos"></tbody>
-  </table>
-  </div>
-  <div style="margin-top:10px">
-    <button id="btnAgregar">+ Agregar producto</button>
-    <button class="secundario" id="btnExportar">Exportar catálogo</button>
-    <button class="secundario" id="btnImportar">Importar catálogo</button>
-    <input type="file" id="archivoImportar" accept=".json" style="display:none">
-  </div>
-</div>
+<main class="contenido">
+  <div class="controles">
 
-<div class="panel">
-  <h2>2. Arma la hoja</h2>
-  <div class="fila-controles">
-    <label><input type="radio" name="modo" value="iguales" checked> Las 6 iguales</label>
-    <label><input type="radio" name="modo" value="distintas"> Cada lugar distinto</label>
-  </div>
-  <div id="bloqueIguales"><select id="selIgual"></select></div>
-  <div id="bloqueDistintas" class="lugares" style="display:none"></div>
-  <div class="fila-controles">
-    <label>Hojas a imprimir: <input type="number" id="hojas" min="1" max="500" value="1" style="width:80px"></label>
-  </div>
-</div>
+    <section class="paso">
+      <div class="paso-tit"><span class="paso-num">1</span><h2>Catálogo de productos</h2></div>
+      <p class="ayuda">Escribe directo en la tabla. Se guarda en este dispositivo; exporta el catálogo para pasarlo a otro.</p>
+      <div class="tabla-scroll">
+        <table>
+          <thead><tr><th>Línea 1</th><th>Línea 2</th><th>Talla</th><th>Color</th><th>Código de barras</th><th><span class="sr" style="position:absolute;left:-9999px">Acciones</span></th></tr></thead>
+          <tbody id="tablaProductos"></tbody>
+        </table>
+      </div>
+      <div class="acciones">
+        <button class="btn btn-primario" id="btnAgregar">Agregar producto</button>
+        <button class="btn" id="btnExportar">Exportar catálogo</button>
+        <button class="btn" id="btnImportar">Importar catálogo</button>
+        <input type="file" id="archivoImportar" accept=".json" hidden>
+      </div>
+    </section>
 
-<div class="panel">
-  <h2>3. Vista previa</h2>
-  <canvas id="vista" width="815" height="1215"></canvas>
-  <p class="ayuda">Así se lee la hoja. La Zebra la imprime girada 180°, igual que tu diseño original.</p>
-</div>
+    <section class="paso">
+      <div class="paso-tit"><span class="paso-num">2</span><h2>Arma la hoja</h2></div>
+      <p class="ayuda">Elige qué producto va en cada etiqueta y cuántas hojas imprimir.</p>
+      <div class="selector-modo" role="radiogroup" aria-label="Distribución de la hoja">
+        <label><input type="radio" name="modo" value="iguales" checked><span>Las 6 iguales</span></label>
+        <label><input type="radio" name="modo" value="distintas"><span>Cada lugar distinto</span></label>
+      </div>
+      <div id="bloqueIguales"><select id="selIgual" aria-label="Producto para las 6 etiquetas"></select></div>
+      <div id="bloqueDistintas" class="lugares" style="display:none"></div>
+      <div class="hojas-fila">
+        <label for="hojas"><strong>Hojas</strong></label>
+        <div class="contador">
+          <button type="button" id="menosHojas" aria-label="Una hoja menos">−</button>
+          <input type="number" id="hojas" min="1" max="500" value="1" inputmode="numeric">
+          <button type="button" id="masHojas" aria-label="Una hoja más">+</button>
+        </div>
+        <span class="total" id="totalEtiquetas">6 etiquetas</span>
+      </div>
+    </section>
 
-<div class="panel">
-  <h2>4. Imprimir</h2>
-  <div class="fila-controles">
-    <label>IP de la Raspberry Pi: <input type="text" id="ipPi" style="width:160px"></label>
   </div>
-  <button id="btnEnviar">Enviar a la Zebra</button>
-  <button class="secundario" id="btnDescargar">Descargar .zpl</button>
-  <button class="secundario" id="btnCopiar">Copiar ZPL</button>
-  <div class="estado" id="estado"></div>
-</div>
+
+  <aside class="lado-hoja">
+    <div class="hoja-marco">
+      <canvas id="vista" width="815" height="1215" aria-label="Vista previa de la hoja de etiquetas"></canvas>
+    </div>
+    <p class="hoja-pie">Así se lee la hoja. La Zebra la imprime girada 180°, como tu diseño original.</p>
+
+    <div class="imprimir">
+      <button class="btn-imprimir" id="btnEnviar">Imprimir en la Zebra</button>
+      <div class="estado" id="estado" role="status" aria-live="polite"></div>
+      <div class="secundarias">
+        <button class="btn" id="btnDescargar">Descargar .zpl</button>
+        <button class="btn" id="btnCopiar">Copiar ZPL</button>
+      </div>
+      <details class="config">
+        <summary>Conexión con la Raspberry Pi</summary>
+        <label for="ipPi">IP <input type="text" id="ipPi" inputmode="decimal" autocomplete="off"></label>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function () {
+  var inp = document.getElementById('hojas'), total = document.getElementById('totalEtiquetas');
+  function fijar(n) {
+    n = Math.max(1, Math.min(500, n || 1));
+    inp.value = n;
+    total.textContent = (n * 6) + ' etiquetas';
+  }
+  document.getElementById('menosHojas').addEventListener('click', function () { fijar((+inp.value || 1) - 1); });
+  document.getElementById('masHojas').addEventListener('click', function () { fijar((+inp.value || 1) + 1); });
+  inp.addEventListener('input', function () { var n = parseInt(inp.value, 10); total.textContent = ((n > 0 ? Math.min(n, 500) : 1) * 6) + ' etiquetas'; });
+  inp.addEventListener('change', function () { fijar(parseInt(inp.value, 10)); });
+})();
+</script>
 
 <script>
 (function () {
