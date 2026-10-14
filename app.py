@@ -777,6 +777,12 @@ def etiquetas():
     html = open('etiquetas.html', encoding='utf-8').read()
     return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
 
+@app.route('/productos')
+@app.route('/etiquetas-productos.html')
+def etiquetas_productos():
+    html = open('etiquetas-productos.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
+
 # Sirve archivos estaticos sueltos que viven junto a app.py (imagenes, iconos,
 # etc.) para que URLs como /logo-conversion.png funcionen. Solo permite
 # extensiones de archivo seguras/esperadas, nunca .py ni archivos de datos.

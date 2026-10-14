@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Etiquetas de Productos - CIRA</title>
+<link rel="icon" href="/cira-icon-web.svg">
+<meta name="theme-color" content="#2563eb">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Segoe UI, Arial, sans-serif; background: #f2f4f7; margin: 0; padding: 20px; color: #222; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitulo { color: #666; margin: 0 0 20px; font-size: 13px; }
+  .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 18px; max-width: 1100px; }
+  .panel h2 { font-size: 15px; margin: 0 0 10px; }
+  .ayuda { font-size: 12px; color: #777; margin: 6px 0 10px; }
+  button { background: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 5px; font-size: 13px; cursor: pointer; margin: 0 8px 6px 0; }
+  button:hover { background: #1d4ed8; }
+  button.secundario { background: #6b7280; }
+  button.secundario:hover { background: #4b5563; }
+  button.peligro { background: #dc2626; padding: 4px 8px; font-size: 12px; margin: 0; }
+  button.peligro:hover { background: #b91c1c; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+  th, td { border: 1px solid #e0e0e0; padding: 4px 6px; text-align: left; }
+  th { background: #f8f9fb; }
+  td input { width: 100%; border: 1px solid #ddd; border-radius: 3px; padding: 4px; font-size: 13px; }
+  input, select { font-size: 13px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+  .fila-controles { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; }
+  .lugares { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-width: 600px; margin-top: 8px; }
+  .lugares label { font-size: 12px; color: #555; display: block; }
+  .lugares select { width: 100%; }
+  #vista { width: 100%; max-width: 408px; border: 1px solid #ccc; background: #fff; display: block; }
+  .estado { font-size: 13px; margin-top: 6px; }
+  .tabla-scroll { overflow-x: auto; }
+  @media (max-width: 600px) { body { padding: 12px; } .lugares { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Etiquetas de Productos CIRA</h1>
+<p class="subtitulo">Hoja de 4×6" con 6 etiquetas de 2×2" — impresión directa a la Zebra por la Raspberry Pi.</p>
+
+<div class="panel">
+  <h2>1. Catálogo de productos</h2>
+  <p class="ayuda">Se guarda en este dispositivo. Usa Exportar/Importar para pasarlo a otro equipo.</p>
+  <div class="tabla-scroll">
+  <table>
+    <thead><tr><th>Línea 1</th><th>Línea 2</th><th>Talla</th><th>Color</th><th>Código de barras</th><th></th></tr></thead>
+    <tbody id="tablaProductos"></tbody>
+  </table>
+  </div>
+  <div style="margin-top:10px">
+    <button id="btnAgregar">+ Agregar producto</button>
+    <button class="secundario" id="btnExportar">Exportar catálogo</button>
+    <button class="secundario" id="btnImportar">Importar catálogo</button>
+    <input type="file" id="archivoImportar" accept=".json" style="display:none">
+  </div>
+</div>
+
+<div class="panel">
+  <h2>2. Arma la hoja</h2>
+  <div class="fila-controles">
+    <label><input type="radio" name="modo" value="iguales" checked> Las 6 iguales</label>
+    <label><input type="radio" name="modo" value="distintas"> Cada lugar distinto</label>
+  </div>
+  <div id="bloqueIguales"><select id="selIgual"></select></div>
+  <div id="bloqueDistintas" class="lugares" style="display:none"></div>
+  <div class="fila-controles">
+    <label>Hojas a imprimir: <input type="number" id="hojas" min="1" max="500" value="1" style="width:80px"></label>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>3. Vista previa</h2>
+  <canvas id="vista" width="815" height="1215"></canvas>
+  <p class="ayuda">Así se lee la hoja. La Zebra la imprime girada 180°, igual que tu diseño original.</p>
+</div>
+
+<div class="panel">
+  <h2>4. Imprimir</h2>
+  <div class="fila-controles">
+    <label>IP de la Raspberry Pi: <input type="text" id="ipPi" style="width:160px"></label>
+  </div>
+  <button id="btnEnviar">Enviar a la Zebra</button>
+  <button class="secundario" id="btnDescargar">Descargar .zpl</button>
+  <button class="secundario" id="btnCopiar">Copiar ZPL</button>
+  <div class="estado" id="estado"></div>
+</div>
+
+<script>
+(function () {
+  // ===== Recursos del diseño original (logo y líneas de corte) =====
+  var LOGO_ZPL = "^GFA,03584,03584,00028,:Z64:\neJztlL+P0zAUx5+Do0YdIJEa3QJqlKnqcP8CjhSrays5YinqyIoE6BZQrU7R/RUVU5SBvyFIsDPABuLmG6obOLEcCs9uG/v6A2gnkPhGieI8f/J9z3kOwH/9118k/xcxb+sJ467LqUhdPlbDjNnBwml70O+3z3M16s+tEA/cUUCzIBFDHLl1bcUcr4jyfBbJXPm137yRJpaGH5OOSAQfUxxN6vqDbShl3pv14pm2K0vLMPXTJBCJzznWR+q6vrGq8nKZ51LRaH55WS6sPIUYZe8S8vZtBdCqq0e1qdDpRbFXgDOTmGC7BKc0iSZDP/RFEoYhDrrfAKbV1tpp3cUkT+e7Y11kuhe7Y32VgOFIQInrUkgIDqZ43rkyc1VaOXg6u566mHfSxOUwSnmqPvtL9SKLs6U5K09CCYw6LgR4/xTWF+O37pWigbXckHJBaEpDBqCtXu72Q6vI4mxhij7bx10o+z1cBW4F471+ckd/rzjC4L554OVrSUcq7m4Twk5eq2pV2fWPtNvE7kjzCmdWFmXZbsYPSLCSz1pf6+u6/m7ssJWXwmZbXBblwjToaGX29ctn1qoznlkNGpUWp79D2XDPpkpnZy9eCNa6wvYJpk0stjjVntigTeZP3r+/EZMbIR6P2b2PQIWYVA03x4VXRni2NdE2XIUL2HruMyJYF7d8EJzYnLdslDXnNLFBJaibfPazBDmGvxs+sLg+OLKAvuzBciXNhnjCpvSEPfezIXKg9sfJleFKaM+Rm/fgdIMbVK/ogw9jzU0YTVPxaIPrIRep7Yf/M5s7Q7+h5h5mZ9+n1zbXx7rmmGcOp4tSOuXi4nZ9TNc3+YSfjt9aT92QER6rTmnWc8CgAwT0enb0EwK3OAf0enobHK/Y2A+pPwwFy5YShntdQuxAFEewqUG2lki2ON0r5/Ic//Nypcbvyyc1d7iPi+M4inf48eXcvVyB6hWF3MAYb/LMdnCv46U2/QgYjkA4ytQxXEfNbGczzdRIQLh8AWv8Gm3V5weN1F5Y3Rwod8PvT0WO9kvx4Ef4+Xgc7kcFE6Ijfj9xy087HswBZzx12eFcAOh3OAaUpSk9giNY3xHlqe2RHoOpL3gUh/vjOO5Yv39PPwGcR0Ju:221C";
+  var DIVISORES_ZPL = ["^FO384,0^GFA,04864,04864,00004,:Z64:\neJztyrEJAAAIA0E713Z0FxC0srqHVLmIj7LmXR3P8zzP8zzP8zzP8zzPT/9eA3qjno4=:CBD8", "^FO0,800^GFA,03328,03328,00104,:Z64:\neJxjYBgFo2AUjFjA0dDB1bCKa8Eq+Yf/5KhuuouIY4ioYxjQbGREmT1MCkxMCiAX86GaionItUeQEehoAmaTbE8DBziYuYk2FYKAWoCIo6EBv+mOLqKOJSQZLJoYwurggM9MBUgwcy14R5LB8g/e8T0AaWRSUCAmYBKJNxsYLQLEGEmGPWAXczV0cJBtPnZ7xEEZIITFgWJjsdgDCWauBUpMCtQ3fhSMglEwCoY3AACcwPm9:DAC3", "^FO0,384^GFA,03328,03328,00104,:Z64:\neJxjYBgFo2AUjIJRMApGwShgYGBxDBF1DBF3/CdHHfOYGJSYFFZxLQCid3wP/8ljIArtYRQQBbkYi8Fk29PQAXbuKoJGkmyPA4Oji6hjiWgiGQYDdYWwOroAzUAGCojQJc+5QMT3AGIC0CgFHA4n3VRQKhIkOshJsQcSOVwNHSSbjseeMlAqcnBhcaDAUGz2PHiHFLpM1DV8FFAIAEoY+Fo=:0726"];
+  var LOGO_PNG = 'data:image/png;base64,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';
+
+  // ===== Geometría (puntos a 203 dpi) =====
+  var W = 815, H = 1215;           // hoja 4x6"
+  var CW = 407.5, CH = 405;        // cada etiqueta 2x2"
+  var LOGO_W = 224, LOGO_H = 128;
+  var TXT_W = 380;                 // ancho del bloque de texto
+  var BAR_H = 60;                  // altura de barras (versión "chaparrita")
+  var LINEAS = [                   // y relativa (lectura) y alto de letra
+    { campo: 'linea1', y: 110, h: 32 },
+    { campo: 'linea2', y: 145, h: 32 },
+    { campo: 'talla',  y: 190, h: 28, prefijo: 'Talla: ' },
+    { campo: 'color',  y: 224, h: 28, prefijo: 'Color: ' }
+  ];
+  var BAR_Y = 264, COD_Y = 330, COD_H = 22;
+
+  // ===== Code 128 =====
+  var C128 = ['212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+    '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+    '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+    '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+    '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+    '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+    '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+    '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+    '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+    '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+    '114131','311141','411131','211412','211214','211232','2331112'];
+
+  function esSubsetC(t) { return /^\d+$/.test(t) && t.length % 2 === 0 && t.length >= 2; }
+
+  // Devuelve la secuencia de anchos (barra, espacio, barra...) en módulos
+  function code128Modulos(t) {
+    var vals = [], i;
+    if (esSubsetC(t)) {
+      vals.push(105);
+      for (i = 0; i < t.length; i += 2) vals.push(parseInt(t.substr(i, 2), 10));
+    } else {
+      vals.push(104);
+      for (i = 0; i < t.length; i++) vals.push(t.charCodeAt(i) - 32);
+    }
+    var suma = vals[0];
+    for (i = 1; i < vals.length; i++) suma += vals[i] * i;
+    vals.push(suma % 103);
+    vals.push(106);
+    var anchos = [];
+    vals.forEach(function (v) { C128[v].split('').forEach(function (d) { anchos.push(+d); }); });
+    return anchos;
+  }
+
+  function limpiarCodigo(t) {
+    // Code128 B: ASCII imprimible sin los caracteres de control de ZPL
+    return String(t || '').replace(/[^\x20-\x7E]/g, '').replace(/[\^~>]/g, '').trim();
+  }
+  function limpiarTexto(t) {
+    return String(t || '').replace(/[\^~\\]/g, '').trim();
+  }
+
+  // ===== Catálogo =====
+  var CLAVE = 'cira_productos';
+  var PRODUCTO_EJEMPLO = { linea1: 'BATA', linea2: 'ANTIESTATICA REF.', talla: 'CHICO (S)', color: 'Azul Marino', codigo: '092024003911' };
+  var productos;
+  try { productos = JSON.parse(localStorage.getItem(CLAVE)) || []; } catch (e) { productos = []; }
+  if (!productos.length) productos = [PRODUCTO_EJEMPLO];
+
+  function guardar() { try { localStorage.setItem(CLAVE, JSON.stringify(productos)); } catch (e) {} }
+
+  function nombreProducto(p) {
+    return [p.linea1, p.linea2, p.talla, p.color].filter(Boolean).join(' · ') || '(sin nombre)';
+  }
+
+  var tabla = document.getElementById('tablaProductos');
+  function pintarTabla() {
+    tabla.innerHTML = '';
+    productos.forEach(function (p, idx) {
+      var tr = document.createElement('tr');
+      ['linea1', 'linea2', 'talla', 'color', 'codigo'].forEach(function (campo) {
+        var td = document.createElement('td');
+        var inp = document.createElement('input');
+        inp.value = p[campo] || '';
+        inp.addEventListener('input', function () {
+          p[campo] = inp.value; guardar(); pintarSelects(); pintarVista();
+        });
+        td.appendChild(inp); tr.appendChild(td);
+      });
+      var tdB = document.createElement('td');
+      var b = document.createElement('button');
+      b.className = 'peligro'; b.textContent = 'Quitar';
+      b.addEventListener('click', function () {
+        if (productos.length === 1) { alert('Debe quedar al menos un producto.'); return; }
+        if (!confirm('¿Quitar "' + nombreProducto(p) + '"?')) return;
+        productos.splice(idx, 1);
+        lugares = lugares.map(function (l) { return l === idx ? 0 : (l > idx ? l - 1 : l); });
+        guardar(); pintarTodo();
+      });
+      tdB.appendChild(b); tr.appendChild(tdB);
+      tabla.appendChild(tr);
+    });
+  }
+
+  document.getElementById('btnAgregar').addEventListener('click', function () {
+    productos.push({ linea1: '', linea2: '', talla: '', color: '', codigo: '' });
+    guardar(); pintarTodo();
+  });
+  document.getElementById('btnExportar').addEventListener('click', function () {
+    descargar('catalogo_cira.json', JSON.stringify(productos, null, 2), 'application/json');
+  });
+  var archivo = document.getElementById('archivoImportar');
+  document.getElementById('btnImportar').addEventListener('click', function () { archivo.click(); });
+  archivo.addEventListener('change', function () {
+    var f = archivo.files[0]; if (!f) return;
+    f.text().then(function (txt) {
+      var data = JSON.parse(txt);
+      if (!Array.isArray(data) || !data.length) throw new Error('formato');
+      productos = data.map(function (p) {
+        return { linea1: p.linea1 || '', linea2: p.linea2 || '', talla: p.talla || '', color: p.color || '', codigo: p.codigo || '' };
+      });
+      lugares = [0, 0, 0, 0, 0, 0];
+      guardar(); pintarTodo();
+    }).catch(function () { alert('El archivo no es un catálogo válido.'); });
+    archivo.value = '';
+  });
+
+  // ===== Hoja =====
+  var lugares = [0, 0, 0, 0, 0, 0];   // índice de producto por lugar (orden de lectura)
+  var NOMBRES_LUGAR = ['Arriba izq.', 'Arriba der.', 'Centro izq.', 'Centro der.', 'Abajo izq.', 'Abajo der.'];
+  var selIgual = document.getElementById('selIgual');
+  var bloqueDistintas = document.getElementById('bloqueDistintas');
+
+  function modo() { return document.querySelector('input[name=modo]:checked').value; }
+
+  function opciones(sel, valor) {
+    sel.innerHTML = '';
+    productos.forEach(function (p, i) {
+      var o = document.createElement('option'); o.value = i; o.textContent = nombreProducto(p);
+      sel.appendChild(o);
+    });
+    sel.value = valor;
+  }
+
+  function pintarSelects() {
+    opciones(selIgual, lugares[0]);
+    bloqueDistintas.innerHTML = '';
+    lugares.forEach(function (l, i) {
+      var div = document.createElement('div');
+      var lab = document.createElement('label'); lab.textContent = NOMBRES_LUGAR[i];
+      var sel = document.createElement('select');
+      opciones(sel, l);
+      sel.addEventListener('change', function () { lugares[i] = +sel.value; pintarVista(); });
+      div.appendChild(lab); div.appendChild(sel); bloqueDistintas.appendChild(div);
+    });
+  }
+
+  selIgual.addEventListener('change', function () {
+    lugares = lugares.map(function () { return +selIgual.value; });
+    pintarSelects(); pintarVista();
+  });
+  document.querySelectorAll('input[name=modo]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      var iguales = modo() === 'iguales';
+      document.getElementById('bloqueIguales').style.display = iguales ? '' : 'none';
+      bloqueDistintas.style.display = iguales ? 'none' : '';
+      if (iguales) lugares = lugares.map(function () { return lugares[0]; });
+      pintarSelects(); pintarVista();
+    });
+  });
+
+  function productosDeHoja() { return lugares.map(function (i) { return productos[i] || productos[0]; }); }
+
+  // ===== Medición de texto (ajusta la letra si el texto es largo) =====
+  var medidor = document.createElement('canvas').getContext('2d');
+  function altoQueCabe(texto, hMax) {
+    var h = hMax;
+    while (h > 14) {
+      medidor.font = 'bold ' + h + 'px Arial';
+      if (medidor.measureText(texto).width <= TXT_W - 10) break;
+      h -= 2;
+    }
+    return h;
+  }
+
+  function lineasDe(p) {
+    return LINEAS.map(function (L) {
+      var v = limpiarTexto(p[L.campo]);
+      var texto = v ? (L.prefijo || '') + v : '';
+      return { texto: texto, y: L.y, h: texto ? altoQueCabe(texto, L.h) : L.h, hBase: L.h };
+    });
+  }
+
+  function barra(p) {
+    var cod = limpiarCodigo(p.codigo);
+    if (!cod) return null;
+    var anchos = code128Modulos(cod);
+    var mods = anchos.reduce(function (a, b) { return a + b; }, 0);
+    var modulo = mods * 2 <= TXT_W ? 2 : 1;
+    return { codigo: cod, anchos: anchos, modulo: modulo, ancho: mods * modulo, subsetC: esSubsetC(cod) };
+  }
+
+  // origen (lectura) de cada lugar
+  function origen(i) { return { x: (i % 2) * CW, y: Math.floor(i / 2) * CH }; }
+
+  // ===== Vista previa =====
+  var lienzo = document.getElementById('vista'), ctx = lienzo.getContext('2d');
+  var imgLogo = new Image(); imgLogo.src = LOGO_PNG; imgLogo.onload = function () { pintarVista(); };
+
+  function pintarVista() {
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#999'; ctx.setLineDash([6, 6]); ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(CW, 0); ctx.lineTo(CW, H);
+    ctx.moveTo(0, CH); ctx.lineTo(W, CH); ctx.moveTo(0, CH * 2); ctx.lineTo(W, CH * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    productosDeHoja().forEach(function (p, i) {
+      var o = origen(i);
+      if (imgLogo.complete && imgLogo.naturalWidth) ctx.drawImage(imgLogo, o.x + (CW - LOGO_W) / 2, o.y);
+      ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      lineasDe(p).forEach(function (L) {
+        if (!L.texto) return;
+        ctx.font = 'bold ' + L.h + 'px Arial';
+        ctx.fillText(L.texto, o.x + CW / 2, o.y + L.y + (L.hBase - L.h) / 2);
+      });
+      var b = barra(p);
+      if (b) {
+        var x = o.x + (CW - b.ancho) / 2, negro = true;
+        b.anchos.forEach(function (a) {
+          if (negro) ctx.fillRect(x, o.y + BAR_Y, a * b.modulo, BAR_H);
+          x += a * b.modulo; negro = !negro;
+        });
+        ctx.font = COD_H + 'px Arial';
+        ctx.fillText(b.codigo, o.x + CW / 2, o.y + COD_Y);
+      }
+    });
+  }
+
+  // ===== Generación de ZPL =====
+  // Se diseña en coordenadas de lectura y se convierte a la hoja girada 180° (rotación I).
+  function aPagina(rx, ry, w, h) { return { x: Math.round(W - rx - w), y: Math.round(H - ry - h) }; }
+
+  function zplHoja() {
+    var hojas = Math.max(1, Math.min(500, parseInt(document.getElementById('hojas').value, 10) || 1));
+    var z = ['^XA', '^CI28', '^PW815', '^LL1215', '^LH0,0', '^MMT'];
+    DIVISORES_ZPL.forEach(function (d) { z.push(d); });
+    productosDeHoja().forEach(function (p, i) {
+      var o = origen(i);
+      var pl = aPagina(o.x + (CW - LOGO_W) / 2, o.y, LOGO_W, LOGO_H);
+      z.push('^FO' + pl.x + ',' + pl.y + LOGO_ZPL);
+      lineasDe(p).forEach(function (L) {
+        if (!L.texto) return;
+        var ry = o.y + L.y + (L.hBase - L.h) / 2;
+        var pt = aPagina(o.x + (CW - TXT_W) / 2, ry, TXT_W, L.h);
+        z.push('^FO' + pt.x + ',' + pt.y + '^A0I,' + L.h + ',' + L.h + '^FB' + TXT_W + ',1,0,C,0^FD' + L.texto + '^FS');
+      });
+      var b = barra(p);
+      if (b) {
+        var pb = aPagina(o.x + (CW - b.ancho) / 2, o.y + BAR_Y, b.ancho, BAR_H);
+        z.push('^BY' + b.modulo + ',3,' + BAR_H + '^FO' + pb.x + ',' + pb.y + '^BCI,' + BAR_H + ',N,N^FD' + (b.subsetC ? '>;' : '>:') + b.codigo + '^FS');
+        var pc = aPagina(o.x + (CW - TXT_W) / 2, o.y + COD_Y, TXT_W, COD_H);
+        z.push('^FO' + pc.x + ',' + pc.y + '^A0I,' + COD_H + ',' + COD_H + '^FB' + TXT_W + ',1,0,C,0^FD' + b.codigo + '^FS');
+      }
+    });
+    z.push('^PQ' + hojas + ',0,1,Y');
+    z.push('^XZ');
+    return z.join('\n');
+  }
+
+  // ===== Imprimir =====
+  var estado = document.getElementById('estado');
+  function avisar(txt, color) { estado.textContent = txt; estado.style.color = color || '#666'; }
+
+  function descargar(nombre, contenido, tipo) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([contenido], { type: tipo }));
+    a.download = nombre; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  document.getElementById('btnDescargar').addEventListener('click', function () {
+    descargar('etiquetas_cira.zpl', zplHoja(), 'text/plain');
+  });
+  document.getElementById('btnCopiar').addEventListener('click', function () {
+    navigator.clipboard.writeText(zplHoja()).then(function () { avisar('ZPL copiado.', '#16a34a'); },
+      function () { avisar('No se pudo copiar.', '#dc2626'); });
+  });
+
+  var inputIp = document.getElementById('ipPi');
+  var IP_POR_DEFECTO = '100.87.53.113';
+  try { inputIp.value = localStorage.getItem('adpack_ip_pi') || IP_POR_DEFECTO; } catch (e) { inputIp.value = IP_POR_DEFECTO; }
+
+  function conTiempo(url, opts, ms) {
+    var c = new AbortController(), t = setTimeout(function () { c.abort(); }, ms);
+    opts = opts || {}; opts.signal = c.signal;
+    return fetch(url, opts).finally(function () { clearTimeout(t); });
+  }
+
+  document.getElementById('btnEnviar').addEventListener('click', function () {
+    var ip = inputIp.value.trim();
+    if (!ip) { avisar('Escribe la IP de la Raspberry Pi.', '#dc2626'); return; }
+    try { localStorage.setItem('adpack_ip_pi', ip); } catch (e) {}
+    var base = 'http://' + ip + ':5000';
+    avisar('Verificando conexión con la Pi...');
+    conTiempo(base + '/salud', {}, 3000).then(function (r) {
+      if (!r.ok) throw new Error('sin respuesta');
+      avisar('Conectado. Enviando...');
+      return conTiempo(base + '/imprimir-zpl', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zpl: zplHoja() })
+      }, 15000).then(function (resp) { return resp.json(); }).then(function (data) {
+        if (data && data.ok) avisar('Enviado a la Zebra correctamente.', '#16a34a');
+        else avisar('Error: ' + ((data && data.error) || 'desconocido'), '#dc2626');
+      });
+    }).catch(function (err) {
+      avisar('No se alcanza la Raspberry Pi en ' + ip + ':5000 (' + err.message + '). Revisa la IP y la red.', '#dc2626');
+    });
+  });
+
+  function pintarTodo() { pintarTabla(); pintarSelects(); pintarVista(); }
+  pintarTodo();
+})();
+</script>
+</body>
+</html>
