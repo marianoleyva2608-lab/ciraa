@@ -99,8 +99,14 @@ DB_PATH = os.path.join(DATA_DIR, 'reports.db')  # ya no se usa para leer/escribi
 # Postgres (Supabase) no es alcanzable por TCP directo desde este contenedor
 # (solo Kong, el gateway HTTP, esta en la red compartida). Todo el acceso a
 # datos pasa por la API REST de Supabase (PostgREST) a traves de Kong.
-SB_URL = os.environ.get('SUPABASE_INTERNAL_URL', 'http://manto_supabase_kong:8000').rstrip('/')
-SB_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
+# Supabase de CIRA (proyecto agent / servicio supabase en Easypanel). Se puede
+# sobrescribir con la variable SUPABASE_INTERNAL_URL. Si la variable existe pero
+# viene vacia, se usa este valor por defecto.
+SB_URL = (os.environ.get('SUPABASE_INTERNAL_URL') or 'https://agent-supabase.c4o2yg.easypanel.host').strip().rstrip('/')
+SB_KEY = (os.environ.get('SUPABASE_SERVICE_KEY') or '').strip()
+if not SB_KEY:
+    print('[CIRA] AVISO: falta la variable SUPABASE_SERVICE_KEY; las consultas a la base fallaran.', flush=True)
+print(f'[CIRA] Supabase: {SB_URL}', flush=True)
 
 class SB:
     """Cliente minimo para la API REST de Supabase (PostgREST) via Kong."""
