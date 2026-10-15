@@ -806,6 +806,35 @@ def etiquetas():
     html = open('etiquetas.html', encoding='utf-8').read()
     return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
 
+@app.route('/api/cira/productos', methods=['GET'])
+def cira_buscar_productos():
+    """Busca productos del catalogo CIRA por SKU, nombre o descripcion."""
+    q = (request.args.get('q') or '').strip()
+    try:
+        limite = max(1, min(200, int(request.args.get('limit', 50))))
+    except ValueError:
+        limite = 50
+    filtros = {'activo': 'is.true'}
+    if q:
+        # PostgREST: quitar caracteres que rompen el filtro or=(...)
+        limpio = ''.join(ch for ch in q if ch not in ',()*"\\')
+        for palabra in limpio.split():
+            patron = '*' + palabra + '*'
+            filtros.setdefault('and', [])
+            filtros['and'].append(f'or(sku.ilike.{patron},nombre.ilike.{patron},descripcion.ilike.{patron},talla.ilike.{patron},color.ilike.{patron})')
+        if 'and' in filtros:
+            filtros['and'] = '(' + ','.join(filtros['and']) + ')'
+    try:
+        rows = sb.select('productos',
+                         select='id,sku,nombre,descripcion,talla,color,codigo_barras,unidad,stock,precio_venta,categorias(nombre)',
+                         order='nombre.asc,talla.asc', limit=limite, **filtros)
+    except Exception as e:
+        return _error_bd(e)
+    for r in rows:
+        cat = r.pop('categorias', None)
+        r['categoria'] = (cat or {}).get('nombre', '') if isinstance(cat, dict) else ''
+    return jsonify(rows)
+
 @app.route('/productos')
 @app.route('/etiquetas-productos.html')
 def etiquetas_productos():

@@ -83,6 +83,22 @@
   .btn-imprimir:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--azul-osc); }
   .acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
+  /* ---------- Buscador de inventario ---------- */
+  .buscador { position: relative; margin-bottom: 16px; }
+  .buscador input { width: 100%; padding: 11px 12px; border: 2px solid var(--azul); border-radius: 6px; font-size: 15px; }
+  .buscador input:focus { outline: none; box-shadow: 0 0 0 3px rgba(112,208,220,.5); }
+  .resultados { margin-top: 6px; border: 1px solid var(--linea); border-radius: 6px; max-height: 320px; overflow-y: auto; background: #fff; }
+  .resultados:empty { display: none; }
+  .res { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #edf1f3; }
+  .res:last-child { border-bottom: 0; }
+  .res .info { flex: 1; min-width: 0; }
+  .res .nom { font-weight: 600; font-size: 14px; }
+  .res .det { font-size: 12px; color: var(--gris); }
+  .res .sku { font: 600 12px/1 var(--texto); color: var(--azul-osc); background: #e8f1fb; padding: 3px 6px; border-radius: 3px; }
+  .res button { flex: 0 0 auto; }
+  .res-msg { padding: 10px; font-size: 13px; color: var(--gris); }
+  .subtit { font: 700 16px/1.2 var(--cond); color: var(--azul-osc); margin: 4px 0 8px; }
+
   /* ---------- Catálogo ---------- */
   .tabla-scroll { overflow-x: auto; border: 1px solid var(--linea); border-radius: 4px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 640px; }
@@ -168,8 +184,13 @@
   <div class="controles">
 
     <section class="paso">
-      <div class="paso-tit"><span class="paso-num">1</span><h2>Catálogo de productos</h2></div>
-      <p class="ayuda">Escribe directo en la tabla. Se guarda en este dispositivo; exporta el catálogo para pasarlo a otro.</p>
+      <div class="paso-tit"><span class="paso-num">1</span><h2>Elige los productos</h2></div>
+      <p class="ayuda">Busca en el inventario de CIRA por nombre, SKU, talla o color y agrégalo a la lista. Puedes ajustar el texto de la etiqueta en la tabla.</p>
+      <div class="buscador">
+        <input type="search" id="buscarProducto" placeholder="Ej. bota 28, chaleco naranja, 2548" autocomplete="off" aria-label="Buscar producto">
+        <div class="resultados" id="resultados" role="listbox" aria-label="Resultados de búsqueda"></div>
+      </div>
+      <h3 class="subtit">Productos para imprimir</h3>
       <div class="tabla-scroll">
         <table>
           <thead><tr><th>Línea 1</th><th>Línea 2</th><th>Talla</th><th>Color</th><th>Código de barras</th><th><span class="sr" style="position:absolute;left:-9999px">Acciones</span></th></tr></thead>
@@ -177,9 +198,9 @@
         </table>
       </div>
       <div class="acciones">
-        <button class="btn btn-primario" id="btnAgregar">Agregar producto</button>
-        <button class="btn" id="btnExportar">Exportar catálogo</button>
-        <button class="btn" id="btnImportar">Importar catálogo</button>
+        <button class="btn" id="btnAgregar">Agregar a mano</button>
+        <button class="btn" id="btnExportar">Exportar lista</button>
+        <button class="btn" id="btnImportar">Importar lista</button>
         <input type="file" id="archivoImportar" accept=".json" hidden>
       </div>
     </section>
@@ -560,6 +581,47 @@
       avisar('No se alcanza la Raspberry Pi en ' + ip + ':5000 (' + err.message + '). Revisa la IP y la red.', '#dc2626');
     });
   });
+
+  // ===== Búsqueda en el inventario CIRA (Supabase vía /api/cira/productos) =====
+  var inpBuscar = document.getElementById('buscarProducto');
+  var cajaRes = document.getElementById('resultados');
+  var tBuscar = null, ultimaBusqueda = 0;
+  function textoSeguro(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
+  function agregarDesdeInventario(r) {
+    var nuevo = { linea1: r.nombre || '', linea2: r.descripcion || '', talla: r.talla || '', color: r.color || '', codigo: r.codigo_barras || r.sku || '' };
+    // si la lista solo tiene el ejemplo, reemplazarlo
+    if (productos.length === 1 && JSON.stringify(productos[0]) === JSON.stringify(PRODUCTO_EJEMPLO)) productos = [];
+    productos.push(nuevo);
+    var idx = productos.length - 1;
+    if (modo() === 'iguales') lugares = lugares.map(function () { return idx; });
+    guardar(); pintarTodo();
+    avisar('Agregado: ' + nombreProducto(nuevo), '#1b7a3a');
+  }
+  function buscar() {
+    var q = inpBuscar.value.trim();
+    if (q.length < 2) { cajaRes.innerHTML = ''; return; }
+    var id = ++ultimaBusqueda;
+    cajaRes.innerHTML = '<div class="res-msg">Buscando…</div>';
+    fetch('/api/cira/productos?limit=40&q=' + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (id !== ultimaBusqueda) return;
+        if (!Array.isArray(data)) { cajaRes.innerHTML = '<div class="res-msg">' + textoSeguro((data && data.error) || 'No se pudo buscar.') + '</div>'; return; }
+        if (!data.length) { cajaRes.innerHTML = '<div class="res-msg">No hay productos que coincidan con "' + textoSeguro(q) + '".</div>'; return; }
+        cajaRes.innerHTML = '';
+        data.forEach(function (r) {
+          var fila = document.createElement('div'); fila.className = 'res';
+          var det = [r.descripcion, r.talla ? 'Talla ' + r.talla : '', r.color, r.unidad].filter(Boolean).join(' · ');
+          fila.innerHTML = '<span class="sku">' + textoSeguro(r.sku) + '</span><div class="info"><div class="nom">' + textoSeguro(r.nombre) + '</div><div class="det">' + textoSeguro(det) + '</div></div>';
+          var b = document.createElement('button'); b.className = 'btn btn-primario'; b.textContent = 'Agregar';
+          b.addEventListener('click', function () { agregarDesdeInventario(r); });
+          fila.appendChild(b); cajaRes.appendChild(fila);
+        });
+      })
+      .catch(function () { if (id === ultimaBusqueda) cajaRes.innerHTML = '<div class="res-msg">No se pudo conectar con el servidor. La búsqueda funciona en la página publicada (/productos).</div>'; });
+  }
+  inpBuscar.addEventListener('input', function () { clearTimeout(tBuscar); tBuscar = setTimeout(buscar, 250); });
+  inpBuscar.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(tBuscar); buscar(); } });
 
   function pintarTodo() { pintarTabla(); pintarSelects(); pintarVista(); }
   pintarTodo();
