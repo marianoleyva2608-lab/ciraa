@@ -5,19 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Etiquetas de Productos - CIRA</title>
 <link rel="icon" href="/cira-icon-web.svg">
-<meta name="theme-color" content="#0f4c9c">
+<meta name="theme-color" content="#162f4e">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --azul: #1565c0;
-    --azul-osc: #0f4c9c;
-    --amarillo: #ffd400;
-    --tinta: #1a2233;
-    --gris: #5b6675;
+    --azul: #3078c6;
+    --azul-osc: #162f4e;
+    --azul-lema: #26508a;
+    --amarillo: #f5ef03;
+    --naranja: #f58612;
+    --cian: #70d0dc;
+    --tinta: #231f20;
+    --gris: #555859;
     --linea: #d5dde3;
-    --fondo: #eef2f3;
+    --fondo: #f2f4f7;
     --papel: #ffffff;
     --ok: #1b7a3a;
     --error: #c62828;
@@ -28,21 +31,21 @@
   html { -webkit-text-size-adjust: 100%; }
   body { margin: 0; background: var(--fondo); color: var(--tinta); font: 15px/1.45 var(--texto); }
   button, input, select { font: inherit; color: inherit; }
-  :focus-visible { outline: 3px solid var(--amarillo); outline-offset: 2px; }
+  :focus-visible { outline: 3px solid var(--cian); outline-offset: 2px; }
 
   /* ---------- Encabezado + franja de precaución ---------- */
   .barra {
-    background: var(--azul-osc);
+    background: linear-gradient(100deg, var(--azul-osc) 0%, var(--azul-lema) 55%, var(--azul) 100%);
     color: #fff;
-    padding: 14px 24px;
+    padding: 12px 24px;
     display: flex; align-items: center; gap: 14px;
   }
-  .barra img { height: 44px; width: auto; background: #fff; border-radius: 8px; padding: 4px 6px; }
+  .barra img { height: 58px; width: auto; background: #fff; border-radius: 10px; padding: 4px 8px; box-shadow: 0 0 0 3px rgba(255,255,255,.18); }
   .barra h1 { font: 700 26px/1.05 var(--cond); margin: 0; letter-spacing: .3px; }
-  .barra p { margin: 2px 0 0; font-size: 13px; color: #c9d8ee; }
+  .barra p { margin: 2px 0 0; font-size: 13px; color: #d2e2f5; }
   .franja {
-    height: 12px;
-    background: repeating-linear-gradient(-45deg, var(--amarillo) 0 18px, var(--tinta) 18px 36px);
+    height: 8px;
+    background: linear-gradient(90deg, var(--amarillo), var(--naranja));
   }
 
   /* ---------- Distribución ---------- */
@@ -57,10 +60,10 @@
   .paso-tit { display: flex; align-items: baseline; gap: 10px; margin: 0 0 4px; }
   .paso-num {
     flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%;
-    background: var(--tinta); color: var(--amarillo);
+    background: var(--azul-osc); color: var(--amarillo);
     font: 700 17px/28px var(--cond); text-align: center;
   }
-  .paso h2 { font: 700 21px/1.1 var(--cond); margin: 0; }
+  .paso h2 { font: 700 21px/1.1 var(--cond); margin: 0; color: var(--azul-osc); }
   .ayuda { font-size: 13px; color: var(--gris); margin: 2px 0 14px 38px; }
 
   /* ---------- Botones ---------- */
@@ -73,11 +76,11 @@
   .btn-primario:hover { background: var(--azul-osc); }
   .btn-imprimir {
     width: 100%; padding: 14px 18px; font: 700 21px/1 var(--cond); letter-spacing: .4px;
-    background: var(--amarillo); color: var(--tinta); border: 2px solid var(--tinta); border-radius: 4px;
-    box-shadow: 0 3px 0 var(--tinta);
+    background: var(--amarillo); color: var(--azul-osc); border: 2px solid var(--azul-osc); border-radius: 6px;
+    box-shadow: 0 3px 0 var(--azul-osc); cursor: pointer;
   }
-  .btn-imprimir:hover { background: #ffe14d; }
-  .btn-imprimir:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--tinta); }
+  .btn-imprimir:hover { background: var(--naranja); color: #fff; }
+  .btn-imprimir:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--azul-osc); }
   .acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
   /* ---------- Catálogo ---------- */
@@ -88,18 +91,18 @@
   tbody tr:last-child td { border-bottom: 0; }
   td input { width: 100%; border: 1px solid transparent; border-radius: 3px; padding: 6px 6px; background: transparent; }
   td input:hover { border-color: var(--linea); }
-  td input:focus { border-color: var(--azul); background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(21,101,192,.18); }
+  td input:focus { border-color: var(--azul); background: #fff; outline: none; box-shadow: 0 0 0 3px rgba(112,208,220,.45); }
   td:last-child { width: 1%; white-space: nowrap; }
   button.peligro { border: 0; background: none; color: var(--error); font-size: 13px; font-weight: 600; padding: 6px 8px; cursor: pointer; border-radius: 3px; }
   button.peligro:hover { background: #fdecec; }
 
   /* ---------- Arma la hoja ---------- */
-  .selector-modo { display: inline-flex; border: 2px solid var(--tinta); border-radius: 4px; overflow: hidden; margin-bottom: 14px; }
+  .selector-modo { display: inline-flex; border: 2px solid var(--azul-osc); border-radius: 4px; overflow: hidden; margin-bottom: 14px; }
   .selector-modo label { position: relative; cursor: pointer; }
   .selector-modo input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
   .selector-modo span { display: block; padding: 8px 16px; font-weight: 600; font-size: 14px; }
-  .selector-modo input:checked + span { background: var(--tinta); color: var(--amarillo); }
-  .selector-modo input:focus-visible + span { outline: 3px solid var(--amarillo); outline-offset: -3px; }
+  .selector-modo input:checked + span { background: var(--azul-osc); color: var(--amarillo); }
+  .selector-modo input:focus-visible + span { outline: 3px solid var(--cian); outline-offset: -3px; }
   #selIgual { width: 100%; max-width: 560px; }
   select { padding: 9px 10px; border: 1px solid #b9c4cd; border-radius: 4px; background: #fff; }
   .lugares { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; max-width: 560px; border: 2px dashed #9aa6b2; border-radius: 4px; }
@@ -153,10 +156,10 @@
 <body>
 
 <header class="barra">
-  <img src="/cira-icon-web.svg" alt="CIRA" onerror="this.style.display='none'">
+  <img src="/logo-cira.png" alt="CIRA – Tu almacén de seguridad" onerror="this.style.display='none'">
   <div>
     <h1>Etiquetas de productos</h1>
-    <p>Hoja de 4×6" con 6 etiquetas de 2×2" para la Zebra</p>
+    <p>Tu almacén de ¡seguridad! · Hoja de 4×6" con 6 etiquetas para la Zebra</p>
   </div>
 </header>
 <div class="franja" aria-hidden="true"></div>
