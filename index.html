@@ -243,7 +243,7 @@ window._jsQRLoaded=false;
     var p=document.getElementById('ap-pin').value;
     document.getElementById('ap-err').textContent='';
     fetch('/api/users/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:e,pin:p})})
-      .then(function(r){return r.json();})
+      .then(function(r){return r.json().catch(function(){return {error:'El servidor respondio con error '+r.status+'. Revisa los Logs de ciraa en Easypanel.'};});})
       .then(function(d){
         if(d.ok){
           // Guardar sesión (misma clave que authInit)
@@ -267,7 +267,7 @@ window._jsQRLoaded=false;
     if(pin.length<4){err.textContent='PIN debe tener m\u00ednimo 4 caracteres';return;}
     if(pin!==pin2){err.textContent='Los PIN no coinciden';return;}
     fetch('/api/users/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nombre:nombre,email:email,pin:pin})})
-      .then(function(r){return r.json();})
+      .then(function(r){return r.json().catch(function(){return {error:'El servidor respondio con error '+r.status+'. Revisa los Logs de ciraa en Easypanel.'};});})
       .then(function(d){
         if(d.ok){
           err.style.color='#2e7d32';

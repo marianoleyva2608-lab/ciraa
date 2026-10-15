@@ -221,6 +221,23 @@ def _normalizar_permisos(permisos):
     partes = [p.strip() for p in permisos.split(',') if p.strip() in TABS_VALIDAS]
     return ','.join(partes)
 
+def _error_bd(e):
+    """Convierte un fallo al hablar con Supabase en un mensaje JSON entendible."""
+    detalle = str(e)
+    resp = getattr(e, 'response', None)
+    if resp is not None:
+        try:
+            cuerpo = resp.json()
+            detalle = cuerpo.get('message') or cuerpo.get('msg') or cuerpo.get('error') or detalle
+        except Exception:
+            detalle = (resp.text or detalle)[:300]
+        if resp.status_code == 401:
+            detalle = 'Clave de Supabase invalida (revisa SUPABASE_SERVICE_KEY en ciraa): ' + str(detalle)
+        elif resp.status_code == 404:
+            detalle = 'La tabla no existe en Supabase (corre schema.sql en el SQL Editor): ' + str(detalle)
+    print('[CIRA] Error de base de datos:', detalle, flush=True)
+    return jsonify({'ok': False, 'error': 'Error de base de datos: ' + str(detalle)}), 500
+
 @app.route('/api/users/register', methods=['POST'])
 def register_user():
     d = request.json
@@ -242,7 +259,7 @@ def register_user():
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 409:
             return jsonify({'error': 'Este email ya esta registrado'}), 409
-        return jsonify({'error': str(e)}), 500
+        return _error_bd(e)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -251,8 +268,11 @@ def login_user():
     d = request.json
     email = d.get('email','').strip().lower()
     pin   = d.get('pin','').strip()
-    rows = sb.select('users', select='id,nombre,email,rol,permisos',
-                      email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    try:
+        rows = sb.select('users', select='id,nombre,email,rol,permisos',
+                          email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    except Exception as e:
+        return _error_bd(e)
     if not rows:
         return jsonify({'error': 'Email o PIN incorrecto'}), 401
     row = rows[0]
@@ -264,8 +284,11 @@ def verify_user():
     d = request.json
     email = d.get('email','').strip().lower()
     pin   = d.get('pin','').strip()
-    rows = sb.select('users', select='id,nombre,email,rol,permisos',
-                      email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    try:
+        rows = sb.select('users', select='id,nombre,email,rol,permisos',
+                          email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    except Exception as e:
+        return _error_bd(e)
     if not rows:
         return jsonify({'ok': False, 'error': 'PIN incorrecto'}), 200
     row = rows[0]
