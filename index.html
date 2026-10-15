@@ -311,7 +311,7 @@ window._jsQRLoaded=false;
 </div>
 
 <div id="page-home" class="page">
-  <div class="hdr"><button class="back" onclick="showPage('menu')" title="Menú principal">&#8249;</button><div style="flex:1"><h1>&#128295; Mantenimiento Preventivo</h1><div class="sub">Selecciona el equipo a inspeccionar</div></div></div>
+  <div class="hdr"><button class="back" onclick="showPage('menu')" title="Menú principal">&#8249;</button><div style="flex:1"><h1>&#128295; Inspección de equipos</h1><div class="sub">Selecciona el equipo a inspeccionar</div></div></div>
   <div class="home-c" id="home-c"></div>
 </div>
 
@@ -1899,7 +1899,7 @@ checkURLHash();
 </div>
 
 <!-- BARRA DE USUARIO ────────────────────────────────────────────── -->
-<div id="user-bar" style="display:none;position:fixed;top:0;left:0;right:0;background:#0d3b1a;color:#fff;padding:5px 16px;z-index:1000;display:flex;align-items:center;gap:10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.15)">
+<div id="user-bar" style="display:none;position:fixed;top:0;left:0;right:0;background:#0f2238;color:#fff;padding:5px 16px;z-index:1000;display:flex;align-items:center;gap:10px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.15)">
   <span style="font-size:13px">🔐</span>
   <span id="user-bar-name" style="font-weight:700;flex:1"></span>
   <span id="user-bar-email" style="opacity:.7;font-size:11px"></span>
@@ -2120,7 +2120,8 @@ window.showPage = function(p) {
 var currentUser = JSON.parse(localStorage.getItem('mantos_user') || 'null');
 
 var TABS_CONTROLADAS = [
-  {id:'home', label:'Mantenimiento Preventivo', icon:'&#128295;', action:function(){showPage('home');}},
+  {id:'home', label:'Inspección de equipos', icon:'&#128295;', oculto:true, action:function(){showPage('home');}},
+  {id:'productos', label:'Etiquetas de productos', icon:'&#129466;', action:function(){window.location.href='/productos';}},
   {id:'etiquetas', label:'Etiquetas', icon:'&#127991;&#65039;', action:function(){window.location.href='/etiquetas';}},
   {id:'req', label:'Requisiciones', icon:'&#128722;', action:function(){showPage('req'); if(typeof loadReqList==='function')loadReqList();}},
   {id:'orden', label:'Órdenes de Trabajo', icon:'&#128203;', action:function(){showPage('orden');}},
@@ -2151,6 +2152,7 @@ function renderTabsPanel() {
   }
   var perms = userTabPermisos();
   var visibles = TABS_CONTROLADAS.filter(function(t){
+    if (t.oculto) return false;
     return perms === 'all' || perms.indexOf(t.id) !== -1;
   });
   panel.innerHTML = '<div class="area-lbl">&#128203; Accesos</div><div class="mgrid">' +
