@@ -184,7 +184,10 @@
   .campos { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
   .campos label, .form-nuevo label { display: block; font-size: 12px; font-weight: 600; color: var(--gris); }
   .campos input, .campos select, .form-nuevo input, .form-nuevo select { display: block; width: 100%; margin-top: 4px; padding: 9px 10px; border: 1px solid #b9c4cd; border-radius: 4px; background: #fff; }
-  .escaner { display: flex; gap: 8px; }
+  .cant-esc { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--gris); }
+  .cant-esc input { width: 92px; margin-top: 2px; padding: 10px 8px; border: 2px solid var(--azul-osc); border-radius: 6px; font: 700 20px/1 var(--texto); text-align: center; }
+  .res .cant-res { width: 70px; padding: 7px 6px; border: 1px solid #b9c4cd; border-radius: 4px; text-align: center; font-weight: 700; }
+  .escaner { display: flex; gap: 8px; align-items: flex-end; }
   .escaner input { flex: 1; padding: 12px; border: 2px solid var(--azul); border-radius: 6px; font-size: 16px; }
   .escaner input:focus { outline: none; box-shadow: 0 0 0 3px rgba(112,208,220,.5); }
   .lista td.cant { width: 120px; }
@@ -242,9 +245,10 @@
 
     <section class="paso">
       <div class="paso-tit"><span class="paso-num">2</span><h2>Productos</h2></div>
-      <p class="ayuda">Escanea el código de barras de la etiqueta o escribe nombre, SKU, talla o color. Escanear dos veces suma 1.</p>
+      <p class="ayuda">Pon la <strong>cantidad</strong>, luego escanea el código de la etiqueta o busca por nombre, SKU, talla o color. Si el producto ya está en la lista, se suma.</p>
       <div class="buscador">
         <div class="escaner">
+          <label class="cant-esc">Cantidad<input type="number" id="cantidad" min="1" step="1" value="1" inputmode="numeric" aria-label="Cantidad a agregar"></label>
           <input type="search" id="buscar" placeholder="Escanea o busca (ej. 3538, bota 28, chaleco naranja)" autocomplete="off" aria-label="Escanear o buscar producto">
         </div>
         <div class="resultados" id="resultados" role="listbox" aria-label="Resultados"></div>
@@ -343,7 +347,7 @@
     var ya = lista.filter(function (x) { return x.producto.id === p.id; })[0];
     if (ya) ya.cantidad += cant || 1; else lista.push({ producto: p, cantidad: cant || 1 });
     pintarLista();
-    avisar('Agregado: ' + nombreProd(p), '#1b7a3a');
+    avisar('Agregado: ' + (cant || 1) + ' × ' + nombreProd(p), '#1b7a3a');
   }
   function pintarLista() {
     var tb = $('lista'), signo = tipo() === 'entrada' ? 1 : -1, total = 0, negativos = 0;
@@ -372,6 +376,11 @@
 
   // ---------- Escáner y búsqueda ----------
   var inp = $('buscar'), caja = $('resultados'), tB = null, nB = 0;
+  var inpCant = $('cantidad');
+  function cantidadElegida() { var v = parseInt(inpCant.value, 10); return v > 0 ? Math.min(v, 100000) : 1; }
+  function reiniciarCantidad() { inpCant.value = 1; inp.focus(); }
+  inpCant.addEventListener('focus', function () { inpCant.select(); });
+  inpCant.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); inp.focus(); } });
   function buscar() {
     var q = inp.value.trim(); if (q.length < 2) { caja.innerHTML = ''; return; }
     var id = ++nB; caja.innerHTML = '<div class="res-msg">Buscando…</div>';
@@ -384,9 +393,13 @@
         var f = document.createElement('div'); f.className = 'res';
         f.innerHTML = '<span class="sku">' + esc(p.sku) + '</span><div class="info"><div class="nom">' + esc(p.nombre) + '</div><div class="det">' +
           esc([p.descripcion, p.talla ? 'Talla ' + p.talla : '', p.color, 'Stock ' + (p.stock || 0)].filter(Boolean).join(' · ')) + '</div></div>';
+        var q = document.createElement('input'); q.type = 'number'; q.min = '1'; q.step = '1'; q.className = 'cant-res';
+        q.value = cantidadElegida(); q.setAttribute('aria-label', 'Cantidad de ' + p.nombre);
         var b = document.createElement('button'); b.className = 'btn btn-primario'; b.textContent = 'Agregar';
-        b.addEventListener('click', function () { agregar(p, 1); caja.innerHTML = ''; inp.value = ''; inp.focus(); });
-        f.appendChild(b); caja.appendChild(f);
+        var add = function () { var v = parseInt(q.value, 10); agregar(p, v > 0 ? v : 1); caja.innerHTML = ''; inp.value = ''; reiniciarCantidad(); };
+        b.addEventListener('click', add);
+        q.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+        f.appendChild(q); f.appendChild(b); caja.appendChild(f);
       });
     });
   }
@@ -397,7 +410,7 @@
     var q = inp.value.trim(); if (!q) return;
     // un escáner escribe el código y manda Enter: probar primero código exacto
     api('/api/cira/productos/codigo/' + encodeURIComponent(q)).then(function (r) {
-      if (r && r.ok) { agregar(r.producto, 1); inp.value = ''; caja.innerHTML = ''; }
+      if (r && r.ok) { agregar(r.producto, cantidadElegida()); inp.value = ''; caja.innerHTML = ''; reiniciarCantidad(); }
       else buscar();
     });
   });
