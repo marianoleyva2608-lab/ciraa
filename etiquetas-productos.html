@@ -144,6 +144,8 @@
   .estado { font-size: 14px; margin-top: 10px; font-weight: 500; }
   .estado:empty { display: none; }
   .estado:not(:empty) { padding: 8px 10px; border-left: 4px solid currentColor; background: #f6f8f9; }
+  .sel-impresora { display: block; font-size: 13px; font-weight: 600; color: var(--azul-osc); margin-bottom: 10px; }
+  .sel-impresora select { display: block; width: 100%; margin-top: 4px; font-weight: 500; }
   details.config { margin-top: 12px; font-size: 13px; }
   details.config summary { cursor: pointer; color: var(--gris); }
   details.config label { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -234,16 +236,15 @@
     <p class="hoja-pie">Así se lee la hoja. La Zebra la imprime girada 180°, como tu diseño original.</p>
 
     <div class="imprimir">
+      <label class="sel-impresora" for="selImpresora">Impresora
+        <select id="selImpresora"><option value="">Cargando impresoras…</option></select>
+      </label>
       <button class="btn-imprimir" id="btnEnviar">Imprimir en la Zebra</button>
       <div class="estado" id="estado" role="status" aria-live="polite"></div>
       <div class="secundarias">
         <button class="btn" id="btnDescargar">Descargar .zpl</button>
         <button class="btn" id="btnCopiar">Copiar ZPL</button>
       </div>
-      <details class="config">
-        <summary>Conexión con la Raspberry Pi</summary>
-        <label for="ipPi">IP <input type="text" id="ipPi" inputmode="decimal" autocomplete="off"></label>
-      </details>
     </div>
   </aside>
 </main>
@@ -572,35 +573,54 @@
       function () { avisar('No se pudo copiar.', '#dc2626'); });
   });
 
-  var inputIp = document.getElementById('ipPi');
-  var IP_POR_DEFECTO = '100.87.53.113';
-  try { inputIp.value = localStorage.getItem('adpack_ip_pi') || IP_POR_DEFECTO; } catch (e) { inputIp.value = IP_POR_DEFECTO; }
+  // ===== Impresoras (cola de impresión: cada Orange Pi recoge sus trabajos) =====
+  var selImp = document.getElementById('selImpresora');
+  var CLAVE_IMP = 'cira_impresora';
+  function cargarImpresoras() {
+    fetch('/api/cira/impresoras').then(function (r) { return r.json(); }).then(function (lista) {
+      if (!Array.isArray(lista)) throw new Error((lista && lista.error) || 'sin datos');
+      var previa = selImp.value; try { previa = previa || localStorage.getItem(CLAVE_IMP) || ''; } catch (e) {}
+      selImp.innerHTML = '';
+      if (!lista.length) { selImp.innerHTML = '<option value="">Ninguna impresora conectada todavía</option>'; return; }
+      lista.forEach(function (imp) {
+        var o = document.createElement('option'); o.value = imp.nombre;
+        o.textContent = (imp.en_linea ? '● ' : '○ ') + imp.nombre + (imp.descripcion ? ' — ' + imp.descripcion : '') + (imp.en_linea ? '' : ' (sin conexión)');
+        selImp.appendChild(o);
+      });
+      if (previa && lista.some(function (x) { return x.nombre === previa; })) selImp.value = previa;
+    }).catch(function () {
+      selImp.innerHTML = '<option value="">No se pudo cargar la lista (abre la página publicada)</option>';
+    });
+  }
+  selImp.addEventListener('change', function () { try { localStorage.setItem(CLAVE_IMP, selImp.value); } catch (e) {} });
+  cargarImpresoras(); setInterval(cargarImpresoras, 20000);
 
-  function conTiempo(url, opts, ms) {
-    var c = new AbortController(), t = setTimeout(function () { c.abort(); }, ms);
-    opts = opts || {}; opts.signal = c.signal;
-    return fetch(url, opts).finally(function () { clearTimeout(t); });
+  function seguirTrabajo(id, intentos) {
+    if (intentos > 40) { avisar('Enviado a la cola. La impresora aún no lo recoge; revisa que su Orange Pi esté encendida y con internet.', '#b45309'); return; }
+    setTimeout(function () {
+      fetch('/api/cira/imprimir/' + id).then(function (r) { return r.json(); }).then(function (t) {
+        if (t.estado === 'impreso') avisar('Impreso en "' + t.impresora + '".', '#1b7a3a');
+        else if (t.estado === 'error') avisar('La impresora reportó un error: ' + (t.error || 'desconocido'), '#c62828');
+        else { avisar(t.estado === 'enviado' ? 'Imprimiendo…' : 'En cola, esperando a la impresora…'); seguirTrabajo(id, intentos + 1); }
+      }).catch(function () { seguirTrabajo(id, intentos + 1); });
+    }, 1500);
   }
 
   document.getElementById('btnEnviar').addEventListener('click', function () {
-    var ip = inputIp.value.trim();
-    if (!ip) { avisar('Escribe la IP de la Raspberry Pi.', '#dc2626'); return; }
-    try { localStorage.setItem('adpack_ip_pi', ip); } catch (e) {}
-    var base = 'http://' + ip + ':5000';
-    avisar('Verificando conexión con la Pi...');
-    conTiempo(base + '/salud', {}, 3000).then(function (r) {
-      if (!r.ok) throw new Error('sin respuesta');
-      avisar('Conectado. Enviando...');
-      return conTiempo(base + '/imprimir-zpl', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ zpl: zplHoja() })
-      }, 15000).then(function (resp) { return resp.json(); }).then(function (data) {
-        if (data && data.ok) avisar('Enviado a la Zebra correctamente.', '#16a34a');
-        else avisar('Error: ' + ((data && data.error) || 'desconocido'), '#dc2626');
-      });
-    }).catch(function (err) {
-      avisar('No se alcanza la Raspberry Pi en ' + ip + ':5000 (' + err.message + '). Revisa la IP y la red.', '#dc2626');
-    });
+    var imp = selImp.value;
+    if (!imp) { avisar('Elige una impresora.', '#c62828'); return; }
+    var usuario = ''; try { usuario = (JSON.parse(localStorage.getItem('mantos_user') || 'null') || {}).nombre || ''; } catch (e) {}
+    var detalle = { hojas: parseInt(document.getElementById('hojas').value, 10) || 1,
+      productos: productosDeHoja().map(function (p) { return p.codigo; }) };
+    avisar('Enviando a la cola…');
+    fetch('/api/cira/imprimir', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ impresora: imp, zpl: zplHoja(), detalle: detalle, usuario: usuario }) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.ok) { avisar('En cola, esperando a la impresora…'); seguirTrabajo(d.id, 0); }
+        else avisar('Error: ' + ((d && d.error) || 'desconocido'), '#c62828');
+      })
+      .catch(function () { avisar('No se pudo conectar con el servidor de CIRA.', '#c62828'); });
   });
 
   // ===== Búsqueda en el inventario CIRA (Supabase vía /api/cira/productos) =====

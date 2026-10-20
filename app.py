@@ -835,6 +835,115 @@ def cira_buscar_productos():
         r['categoria'] = (cat or {}).get('nombre', '') if isinstance(cat, dict) else ''
     return jsonify(rows)
 
+# ══════════════════════════════════════════════════════════
+# COLA DE IMPRESION CIRA (Zebras conectadas a Orange Pi)
+# La pagina deja trabajos en la cola; cada Orange Pi pregunta por los suyos
+# (no necesita IP fija, puertos abiertos ni HTTPS propio).
+# ══════════════════════════════════════════════════════════
+PRINT_TOKEN = (os.environ.get('CIRA_PRINT_TOKEN') or '').strip()
+_ZPL_MAX = 2 * 1024 * 1024
+_ahora = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def _token_impresora_ok():
+    if not PRINT_TOKEN:
+        return False
+    enviado = request.headers.get('X-Print-Token', '')
+    return hashlib.sha256(enviado.encode()).digest() == hashlib.sha256(PRINT_TOKEN.encode()).digest()
+
+def _nombre_impresora(valor):
+    n = ''.join(ch for ch in str(valor or '').strip().lower() if ch.isalnum() or ch in '-_')
+    return n[:40]
+
+@app.route('/api/cira/impresoras', methods=['GET'])
+def cira_impresoras():
+    """Lista de Zebras para el selector de la pagina, con si estan en linea."""
+    try:
+        rows = sb.select('impresoras', select='nombre,descripcion,ultima_conexion', activa='is.true', order='nombre.asc')
+    except Exception as e:
+        return _error_bd(e)
+    ahora = datetime.datetime.now(datetime.timezone.utc)
+    for r in rows:
+        en_linea = False
+        if r.get('ultima_conexion'):
+            try:
+                t = datetime.datetime.fromisoformat(r['ultima_conexion'].replace('Z', '+00:00'))
+                en_linea = (ahora - t).total_seconds() < 30
+            except ValueError:
+                pass
+        r['en_linea'] = en_linea
+    return jsonify(rows)
+
+@app.route('/api/cira/imprimir', methods=['POST'])
+def cira_encolar():
+    """La pagina de etiquetas manda aqui el ZPL; queda pendiente para su Orange Pi."""
+    d = request.get_json(silent=True) or {}
+    impresora = _nombre_impresora(d.get('impresora'))
+    zpl = (d.get('zpl') or '').strip()
+    if not impresora:
+        return jsonify({'ok': False, 'error': 'Elige una impresora.'}), 400
+    if not zpl.startswith('^XA') or not zpl.endswith('^XZ') or len(zpl.encode()) > _ZPL_MAX:
+        return jsonify({'ok': False, 'error': 'ZPL invalido.'}), 400
+    try:
+        rows = sb.insert('trabajos_impresion', {
+            'impresora': impresora, 'zpl': zpl,
+            'detalle': d.get('detalle') if isinstance(d.get('detalle'), (dict, list)) else {},
+            'usuario': str(d.get('usuario') or '')[:80],
+        })
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify({'ok': True, 'id': rows[0]['id'] if rows else None})
+
+@app.route('/api/cira/imprimir/<int:trabajo_id>', methods=['GET'])
+def cira_estado_trabajo(trabajo_id):
+    """La pagina consulta si su trabajo ya se imprimio."""
+    try:
+        rows = sb.select('trabajos_impresion', select='id,impresora,estado,error,created_at,impreso_at', id=f'eq.{trabajo_id}')
+    except Exception as e:
+        return _error_bd(e)
+    if not rows:
+        return jsonify({'ok': False, 'error': 'No existe'}), 404
+    return jsonify({'ok': True, **rows[0]})
+
+@app.route('/api/cira/cola', methods=['GET'])
+def cira_cola():
+    """La Orange Pi pide sus trabajos pendientes (requiere X-Print-Token)."""
+    if not _token_impresora_ok():
+        return jsonify({'ok': False, 'error': 'Token invalido'}), 401
+    impresora = _nombre_impresora(request.args.get('impresora'))
+    if not impresora:
+        return jsonify({'ok': False, 'error': 'Falta impresora'}), 400
+    try:
+        # registrar / actualizar latido de la impresora
+        sb.insert('impresoras', {'nombre': impresora, 'ultima_conexion': _ahora(),
+                                 'version': (request.headers.get('X-Worker-Version') or '')[:20]},
+                  upsert=True, on_conflict='nombre', return_rows=False)
+        pend = sb.select('trabajos_impresion', select='id', impresora=f'eq.{impresora}',
+                         estado='eq.pendiente', order='created_at.asc', limit=5)
+        trabajos = []
+        for t in pend:
+            # tomar el trabajo solo si sigue pendiente (evita imprimir doble)
+            tomado = sb.update('trabajos_impresion', {'estado': 'enviado', 'tomado_at': _ahora()},
+                               id=f'eq.{t["id"]}', estado='eq.pendiente')
+            if tomado:
+                trabajos.append({'id': tomado[0]['id'], 'zpl': tomado[0]['zpl']})
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify({'ok': True, 'trabajos': trabajos})
+
+@app.route('/api/cira/cola/<int:trabajo_id>', methods=['POST'])
+def cira_cola_resultado(trabajo_id):
+    """La Orange Pi avisa si imprimio o fallo."""
+    if not _token_impresora_ok():
+        return jsonify({'ok': False, 'error': 'Token invalido'}), 401
+    d = request.get_json(silent=True) or {}
+    datos = {'estado': 'impreso', 'impreso_at': _ahora(), 'error': ''} if d.get('ok') else \
+            {'estado': 'error', 'error': str(d.get('error') or 'Error desconocido')[:300]}
+    try:
+        sb.update('trabajos_impresion', datos, return_rows=False, id=f'eq.{trabajo_id}')
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify({'ok': True})
+
 @app.route('/productos')
 @app.route('/etiquetas-productos.html')
 def etiquetas_productos():

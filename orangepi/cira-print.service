@@ -1,0 +1,19 @@
+[Unit]
+Description=CIRA - worker de impresion Zebra
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cira-print
+Group=lp
+ExecStart=/usr/bin/python3 /opt/cira-print/cira_print_worker.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
