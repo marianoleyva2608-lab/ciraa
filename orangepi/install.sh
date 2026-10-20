@@ -26,7 +26,7 @@ modprobe usblp 2>/dev/null || true
 grep -qx usblp /etc/modules 2>/dev/null || echo usblp >> /etc/modules
 
 echo "==> Usuario de servicio cira-print (grupo lp)"
-id cira-print >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin --groups lp cira-print
+id cira-print >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin --groups lp cira-print
 usermod -aG lp cira-print
 
 echo "==> Archivos"
@@ -46,7 +46,8 @@ install -m 644 "$DIR/cira-print.service" /etc/systemd/system/cira-print.service
 
 echo "==> Servicio"
 systemctl daemon-reload
-systemctl enable --now cira-print
+systemctl enable cira-print
+systemctl restart cira-print
 sleep 3
 systemctl --no-pager --lines=8 status cira-print || true
 

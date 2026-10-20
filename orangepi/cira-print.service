@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=cira-print
-Group=lp
+Group=cira-print
+SupplementaryGroups=lp
 ExecStart=/usr/bin/python3 /opt/cira-print/cira_print_worker.py
 Restart=always
 RestartSec=5
