@@ -163,12 +163,11 @@
     <section id="tEmpleados" hidden>
       <div class="panel">
         <h2 id="eTit">Nuevo empleado</h2>
-        <p class="ayuda">El número y el PIN son los que teclea en el checador. Deja el número vacío y se asigna solo.</p>
+        <p class="ayuda">El número es lo que teclea en el checador. Déjalo vacío y se asigna solo.</p>
         <form class="form" id="fEmp">
           <input type="hidden" id="eId">
           <label>Número <input id="eNumero" inputmode="numeric" placeholder="Automático"></label>
-          <label style="grid-column: span 2">Nombre completo <input id="eNombre" required></label>
-          <label>PIN (4+ números) <input id="ePin" inputmode="numeric" placeholder=""></label>
+          <label style="grid-column: span 3">Nombre completo <input id="eNombre" required></label>
           <label>Puesto <input id="ePuesto"></label>
           <label>Sucursal <input id="eSucursal"></label>
           <label>Hora de entrada <input type="time" id="eEntrada" value="09:00"></label>
@@ -184,7 +183,7 @@
       </div>
       <div class="panel">
         <h2>Empleados</h2>
-        <p class="ayuda">Da clic en un empleado para editarlo o cambiarle el PIN.</p>
+        <p class="ayuda">Da clic en un empleado para editarlo o darlo de baja.</p>
         <div class="tabla-wrap"><table>
           <thead><tr><th>Núm.</th><th>Nombre</th><th>Puesto</th><th>Sucursal</th><th>Horario</th><th class="num">Tolerancia</th><th>Estado</th></tr></thead>
           <tbody id="eTabla"><tr><td colspan="7" class="vacio">Cargando…</td></tr></tbody>
@@ -285,11 +284,11 @@
     }).catch(function () {});
   }
   function limpiar() {
-    $('fEmp').reset(); $('eId').value = ''; $('eTit').textContent = 'Nuevo empleado'; $('ePin').placeholder = ''; $('eNumero').disabled = false; $('eMsg').textContent = '';
+    $('fEmp').reset(); $('eId').value = ''; $('eTit').textContent = 'Nuevo empleado'; $('eNumero').disabled = false; $('eMsg').textContent = '';
   }
   function editar(e) {
     $('eId').value = e.id; $('eNumero').value = e.numero; $('eNumero').disabled = true; $('eNombre').value = e.nombre;
-    $('ePin').value = ''; $('ePin').placeholder = 'Dejar vacío = no cambiar'; $('ePuesto').value = e.puesto || ''; $('eSucursal').value = e.sucursal || '';
+    $('ePuesto').value = e.puesto || ''; $('eSucursal').value = e.sucursal || '';
     $('eEntrada').value = (e.hora_entrada || '09:00').slice(0, 5); $('eSalida').value = (e.hora_salida || '18:00').slice(0, 5);
     $('eTol').value = e.tolerancia_min; $('eActivo').value = e.activo ? '1' : '0';
     $('eTit').textContent = 'Editar: ' + e.nombre; $('eMsg').textContent = ''; window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -299,12 +298,11 @@
     ev.preventDefault();
     var id = $('eId').value, body = { nombre: $('eNombre').value, puesto: $('ePuesto').value, sucursal: $('eSucursal').value,
       hora_entrada: $('eEntrada').value, hora_salida: $('eSalida').value, tolerancia_min: $('eTol').value, activo: $('eActivo').value === '1' };
-    if ($('ePin').value) body.pin = $('ePin').value;
     if (!id) body.numero = $('eNumero').value;
     $('eMsg').style.color = '#555'; $('eMsg').textContent = 'Guardando…';
     api(id ? '/api/cira/empleados/' + id : '/api/cira/empleados', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) }).then(function (d) {
       if (!d.ok) { $('eMsg').style.color = 'var(--error)'; $('eMsg').textContent = d.error; return; }
-      var msg = id ? 'Cambios guardados.' : 'Alta lista: número ' + d.empleado.numero + '. Con ese número y su PIN ya puede checar.';
+      var msg = id ? 'Cambios guardados.' : 'Alta lista: número ' + d.empleado.numero + '. Con ese número ya puede checar.';
       limpiar(); $('eMsg').style.color = 'var(--ok)'; $('eMsg').textContent = msg; cargarEmpleados();
     }).catch(function () {});
   });

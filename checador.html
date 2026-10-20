@@ -54,12 +54,13 @@
   .msg { min-height: 22px; margin-top: 12px; text-align: center; font-weight: 600; color: var(--error); }
 
   /* Resultado */
-  .resultado { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; z-index: 5; }
+  .resultado { position: fixed; inset: 0; display: none; background: rgba(10,25,45,.72); align-items: center; justify-content: center; padding: 24px; z-index: 5; }
   .resultado.ver { display: flex; }
   .resultado .caja { width: min(640px, 100%); border-radius: 18px; padding: 36px 28px; text-align: center; color: #fff; box-shadow: 0 24px 60px rgba(0,0,0,.4); }
   .resultado .tipo { font: 700 28px var(--cond); letter-spacing: 3px; text-transform: uppercase; opacity: .9; }
   .resultado .nombre { font: 700 clamp(34px, 6vw, 54px)/1.05 var(--cond); margin: 10px 0; }
   .resultado .hora { font: 700 64px/1 var(--cond); }
+  .resultado .completo { font-size: 17px; font-weight: 600; opacity: .9; margin: -4px 0 12px; }
   .resultado .extra { font-size: 20px; font-weight: 600; margin-top: 12px; }
   .entrada .caja { background: var(--ok); }
   .salida .caja { background: var(--azul); }
@@ -98,7 +99,7 @@
   </section>
 
   <section class="tarjeta" aria-live="polite">
-    <p class="paso"><span id="pasoTit">Tu número de empleado</span><small id="pasoSub">Paso 1 de 2</small></p>
+    <p class="paso"><span>Tu número de empleado</span></p>
     <div class="pantalla vacia" id="pantalla">Teclea tu número</div>
     <div class="teclado" id="teclado">
       <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
@@ -106,7 +107,7 @@
       <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
       <button class="borrar" data-k="del" aria-label="Borrar">&#9003;<span class="txt"> Borrar</span></button>
       <button data-k="0">0</button>
-      <button class="ok" data-k="ok" id="btnOk" disabled>Siguiente</button>
+      <button class="ok" data-k="ok" id="btnOk" disabled>Checar</button>
     </div>
     <div class="msg" id="msg" role="status"></div>
   </section>
@@ -116,6 +117,7 @@
   <div class="caja">
     <div class="tipo" id="rTipo"></div>
     <div class="nombre" id="rNombre"></div>
+    <div class="completo" id="rCompleto"></div>
     <div class="hora" id="rHora"></div>
     <div class="extra" id="rExtra"></div>
   </div>
@@ -143,32 +145,21 @@
   }
   reloj(); setInterval(reloj, 1000);
 
-  var paso = 1, numero = '', pin = '', ocupado = false, tReset = null;
+  var numero = '', ocupado = false, tReset = null;
   function pintar() {
-    var v = paso === 1 ? numero : pin.replace(/./g, '•');
-    $('pasoTit').textContent = paso === 1 ? 'Tu número de empleado' : 'Tu PIN';
-    $('pasoSub').textContent = 'Paso ' + paso + ' de 2';
-    $('pantalla').textContent = v || (paso === 1 ? 'Teclea tu número' : 'Teclea tu PIN');
-    $('pantalla').classList.toggle('vacia', !v);
-    $('btnOk').textContent = paso === 1 ? 'Siguiente' : 'Checar';
-    $('btnOk').disabled = !(paso === 1 ? numero : pin.length >= 4) || ocupado;
+    $('pantalla').textContent = numero || 'Teclea tu número';
+    $('pantalla').classList.toggle('vacia', !numero);
+    $('btnOk').disabled = !numero || ocupado;
   }
-  function reiniciar() { paso = 1; numero = ''; pin = ''; ocupado = false; pintar(); }
+  function reiniciar() { numero = ''; ocupado = false; pintar(); }
   function inactividad() { clearTimeout(tReset); tReset = setTimeout(function () { reiniciar(); $('msg').textContent = ''; }, 20000); }
 
   function tecla(k) {
     if (ocupado || $('resultado').classList.contains('ver')) return;
     $('msg').textContent = ''; inactividad();
-    if (k === 'del') {
-      if (paso === 2 && !pin) { paso = 1; }
-      else if (paso === 1) numero = numero.slice(0, -1); else pin = pin.slice(0, -1);
-    } else if (k === 'ok') {
-      if (paso === 1 && numero) paso = 2;
-      else if (paso === 2 && pin.length >= 4) return enviar();
-    } else if (/^\d$/.test(k)) {
-      if (paso === 1 && numero.length < 8) numero += k;
-      else if (paso === 2 && pin.length < 8) pin += k;
-    }
+    if (k === 'del') numero = numero.slice(0, -1);
+    else if (k === 'ok') { if (numero) return enviar(); }
+    else if (/^\d$/.test(k) && numero.length < 8) numero += k;
     pintar();
   }
   $('teclado').addEventListener('click', function (e) { var b = e.target.closest('button'); if (b) tecla(b.dataset.k); });
@@ -182,15 +173,15 @@
   function enviar() {
     ocupado = true; pintar(); $('msg').style.color = '#5b6b7b'; $('msg').textContent = 'Checando…';
     fetch('/api/cira/checador', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ numero: numero, pin: pin, sucursal: suc }) })
+      body: JSON.stringify({ numero: numero, sucursal: suc }) })
       .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Error ' + r.status }; }); })
       .then(function (d) {
         $('msg').style.color = '';
-        if (!d.ok) { $('msg').textContent = d.error || 'No se pudo checar.'; pin = ''; ocupado = false; pintar(); return; }
+        if (!d.ok) { $('msg').textContent = d.error || 'No se pudo checar.'; numero = ''; ocupado = false; pintar(); return; }
         $('msg').textContent = '';
         mostrar(d); reiniciar();
       })
-      .catch(function () { $('msg').style.color = ''; $('msg').textContent = 'Sin conexión. Intenta de nuevo.'; pin = ''; ocupado = false; pintar(); });
+      .catch(function () { $('msg').style.color = ''; $('msg').textContent = 'Sin conexión. Intenta de nuevo.'; ocupado = false; pintar(); });
   }
 
   function nombrePila(n) { var w = String(n || '').trim().split(/\s+/)[0] || ''; return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); }
@@ -199,8 +190,9 @@
     r.className = 'resultado ver ' + (d.retardo_min ? 'retardo' : d.tipo);
     $('rTipo').textContent = d.tipo === 'entrada' ? (d.retardo_min ? 'Entrada con retardo' : 'Entrada') : 'Salida';
     $('rNombre').textContent = (d.tipo === 'entrada' ? '¡Buen día, ' : '¡Hasta luego, ') + nombrePila(d.nombre) + '!';
+    $('rCompleto').textContent = d.nombre;
     $('rHora').textContent = d.hora;
-    $('rExtra').textContent = d.retardo_min ? d.retardo_min + ' min tarde' : (d.tipo === 'entrada' ? 'A tiempo' : 'Buen descanso');
+    $('rExtra').textContent = d.retardo_min ? (d.retardo_min >= 60 ? Math.floor(d.retardo_min / 60) + ' h ' + (d.retardo_min % 60) + ' min' : d.retardo_min + ' min') + ' tarde' : (d.tipo === 'entrada' ? 'A tiempo' : 'Buen descanso');
     setTimeout(function () { r.className = 'resultado'; }, 3500);
   }
   pintar();

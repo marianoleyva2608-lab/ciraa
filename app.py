@@ -1123,8 +1123,6 @@ except Exception:
 def _ahora():
     return datetime.datetime.now(_TZ)
 
-_fallos_pin = {}   # numero -> [fallos, bloqueado_hasta]
-
 def _es_admin():
     """Las rutas de administración piden email + PIN de un usuario con rol admin."""
     email = (request.headers.get('X-Admin-Email') or '').strip().lower()
@@ -1159,23 +1157,13 @@ def pagina_checador_admin():
 def checar():
     d = request.json or {}
     numero = str(d.get('numero', '')).strip()
-    pin = str(d.get('pin', '')).strip()
-    if not numero or not pin:
-        return jsonify({'ok': False, 'error': 'Escribe tu número y tu PIN.'}), 400
+    if not numero:
+        return jsonify({'ok': False, 'error': 'Escribe tu número de empleado.'}), 400
     ahora = _ahora()
-    f = _fallos_pin.get(numero)
-    if f and f[1] and f[1] > ahora:
-        mins = int((f[1] - ahora).total_seconds() // 60) + 1
-        return jsonify({'ok': False, 'error': f'Demasiados intentos. Espera {mins} min o avisa a tu encargado.'}), 429
     try:
-        rows = sb.select('empleados', select='id,numero,nombre,pin_hash,hora_entrada,tolerancia_min,activo', numero='eq.' + numero)
-        if not rows or rows[0]['pin_hash'] != hash_pin(pin) or not rows[0].get('activo', True):
-            f = _fallos_pin.setdefault(numero, [0, None])
-            f[0] += 1
-            if f[0] >= 5:
-                f[0], f[1] = 0, ahora + datetime.timedelta(minutes=5)
-            return jsonify({'ok': False, 'error': 'Número o PIN incorrecto.'}), 401
-        _fallos_pin.pop(numero, None)
+        rows = sb.select('empleados', select='id,numero,nombre,hora_entrada,tolerancia_min,activo', numero='eq.' + numero)
+        if not rows or not rows[0].get('activo', True):
+            return jsonify({'ok': False, 'error': f'No encuentro el número {numero}. Revisa o avisa a tu encargado.'}), 404
         e = rows[0]
         hoy = ahora.date().isoformat()
         previas = sb.select('checadas', select='id,tipo,hora', order='hora.asc', empleado_id='eq.' + str(e['id']), fecha='eq.' + hoy)
@@ -1221,13 +1209,8 @@ def _datos_empleado(d, nuevo):
         try: datos['tolerancia_min'] = max(0, min(240, int(d['tolerancia_min'])))
         except Exception: pass
     if 'activo' in d: datos['activo'] = bool(d['activo'])
-    pin = str(d.get('pin') or '').strip()
-    if pin:
-        if not pin.isdigit() or len(pin) < 4:
-            raise ValueError('El PIN debe ser de al menos 4 números.')
-        datos['pin_hash'] = hash_pin(pin)
-    elif nuevo:
-        raise ValueError('Ponle un PIN de al menos 4 números.')
+    if nuevo:
+        datos['pin_hash'] = ''   # el checador funciona solo con el número de empleado
     if nuevo and not datos.get('nombre'):
         raise ValueError('Falta el nombre.')
     return datos

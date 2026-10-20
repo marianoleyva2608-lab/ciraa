@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS empleados (
     id             BIGSERIAL PRIMARY KEY,
     numero         TEXT UNIQUE NOT NULL,          -- número de empleado (lo teclea en el checador)
     nombre         TEXT NOT NULL,
-    pin_hash       TEXT NOT NULL,                 -- sha256 del PIN
+    pin_hash       TEXT DEFAULT '',               -- sin uso: se checa solo con el número
     puesto         TEXT DEFAULT '',
     sucursal       TEXT DEFAULT '',
     hora_entrada   TIME DEFAULT '09:00',
@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS empleados (
     created_at     TIMESTAMPTZ DEFAULT NOW(),
     updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE empleados ALTER COLUMN pin_hash DROP NOT NULL;
+ALTER TABLE empleados ALTER COLUMN pin_hash SET DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS checadas (
     id           BIGSERIAL PRIMARY KEY,
