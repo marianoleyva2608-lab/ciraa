@@ -836,6 +836,148 @@ def cira_buscar_productos():
     return jsonify(rows)
 
 # ══════════════════════════════════════════════════════════
+# TALLER · ENTRADAS Y SALIDAS (tabla movimientos_inventario; el stock lo
+# actualiza el trigger trg_movimientos_stock en la base de datos)
+# ══════════════════════════════════════════════════════════
+_CAMPOS_PROD = 'id,sku,nombre,descripcion,talla,color,codigo_barras,unidad,stock,stock_minimo'
+
+@app.route('/api/cira/productos/codigo/<codigo>', methods=['GET'])
+def cira_producto_por_codigo(codigo):
+    """Busca un producto por lo que lee el escaner: codigo de barras o SKU.
+    Un codigo CIRA de 12 digitos que empieza con 2 lleva el SKU en los ultimos 4."""
+    c = ''.join(ch for ch in str(codigo) if ch.isalnum() or ch in '-_.')[:40]
+    if not c:
+        return jsonify({'ok': False, 'error': 'Codigo vacio'}), 400
+    try:
+        rows = sb.select('productos', select=_CAMPOS_PROD, activo='is.true', codigo_barras=f'eq.{c}', limit=1)
+        if not rows:
+            rows = sb.select('productos', select=_CAMPOS_PROD, activo='is.true', sku=f'eq.{c}', limit=1)
+        if not rows and len(c) == 12 and c.isdigit() and c.startswith('2'):
+            rows = sb.select('productos', select=_CAMPOS_PROD, activo='is.true', sku=f'eq.{c[-4:]}', limit=1)
+    except Exception as e:
+        return _error_bd(e)
+    if not rows:
+        return jsonify({'ok': False, 'error': f'No hay producto con el codigo {c}'}), 404
+    return jsonify({'ok': True, 'producto': rows[0]})
+
+@app.route('/api/cira/categorias', methods=['GET'])
+def cira_categorias():
+    try:
+        rows = sb.select('categorias', select='id,codigo,nombre', order='codigo.asc.nullslast,nombre.asc')
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify(rows)
+
+@app.route('/api/cira/productos', methods=['POST'])
+def cira_alta_producto():
+    """Alta de producto nuevo. Si no se da SKU, toma el siguiente numero libre de 4 digitos."""
+    d = request.get_json(silent=True) or {}
+    limpio = lambda k, n: ' '.join(str(d.get(k) or '').split())[:n]
+    nombre = limpio('nombre', 60).upper()
+    if not nombre:
+        return jsonify({'ok': False, 'error': 'Escribe el nombre del producto.'}), 400
+    datos = {
+        'nombre': nombre,
+        'descripcion': limpio('descripcion', 120).upper(),
+        'talla': limpio('talla', 20).upper(),
+        'color': limpio('color', 30).title(),
+        'unidad': (limpio('unidad', 20) or 'PIEZA').upper(),
+        'stock_minimo': max(0, int(d.get('stock_minimo') or 0)) if str(d.get('stock_minimo') or '0').isdigit() else 0,
+    }
+    if str(d.get('categoria_id') or '').isdigit():
+        datos['categoria_id'] = int(d['categoria_id'])
+    sku = limpio('sku', 20)
+    try:
+        for _ in range(5):
+            if not sku or d.get('sku') in (None, ''):
+                ult = sb.select('productos', select='sku', sku='match.^[0-9]{4}$', order='sku.desc', limit=1)
+                sku_usar = f'{int(ult[0]["sku"]) + 1:04d}' if ult else '0001'
+            else:
+                sku_usar = sku
+            try:
+                rows = sb.insert('productos', dict(datos, sku=sku_usar))
+                return jsonify({'ok': True, 'producto': {k: rows[0].get(k) for k in _CAMPOS_PROD.split(',')}})
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code == 409:
+                    if d.get('sku'):
+                        return jsonify({'ok': False, 'error': f'El SKU {sku_usar} ya existe.'}), 409
+                    continue   # otro equipo tomo ese numero; intentar con el siguiente
+                raise
+        return jsonify({'ok': False, 'error': 'No se pudo asignar un SKU, intenta de nuevo.'}), 409
+    except Exception as e:
+        return _error_bd(e)
+
+_MOTIVOS = {
+    'entrada': ['Compra a proveedor', 'Producción del taller', 'Devolución de cliente', 'Ajuste de inventario', 'Otro'],
+    'salida': ['Venta', 'Consumo del taller', 'Traspaso', 'Merma / daño', 'Devolución a proveedor', 'Ajuste de inventario', 'Otro'],
+}
+
+@app.route('/api/cira/movimientos/motivos', methods=['GET'])
+def cira_motivos():
+    return jsonify(_MOTIVOS)
+
+@app.route('/api/cira/movimientos', methods=['POST'])
+def cira_registrar_movimiento():
+    """Registra una entrada o salida con uno o varios productos (todo o nada)."""
+    d = request.get_json(silent=True) or {}
+    tipo = d.get('tipo')
+    if tipo not in ('entrada', 'salida'):
+        return jsonify({'ok': False, 'error': 'Elige Entrada o Salida.'}), 400
+    motivo = str(d.get('motivo') or '').strip()[:60]
+    if motivo not in _MOTIVOS[tipo]:
+        return jsonify({'ok': False, 'error': 'Elige un motivo.'}), 400
+    items = d.get('items') or []
+    filas = []
+    for it in items[:200]:
+        try:
+            pid, cant = int(it.get('producto_id')), int(it.get('cantidad'))
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'Cantidad invalida.'}), 400
+        if cant <= 0 or cant > 100000:
+            return jsonify({'ok': False, 'error': 'Las cantidades deben ser mayores a 0.'}), 400
+        filas.append((pid, cant))
+    if not filas:
+        return jsonify({'ok': False, 'error': 'Agrega al menos un producto.'}), 400
+    grupo = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-') + hashlib.sha1(os.urandom(8)).hexdigest()[:4]
+    comunes = {
+        'tipo': tipo, 'motivo': motivo, 'grupo': grupo,
+        'referencia': str(d.get('referencia') or '').strip()[:120],
+        'folio': str(d.get('folio') or '').strip()[:60],
+        'usuario': str(d.get('usuario') or '').strip()[:80],
+    }
+    try:
+        # un solo POST con todas las filas = una sola transaccion en Postgres
+        rows = sb.insert('movimientos_inventario',
+                         [dict(comunes, producto_id=pid, cantidad=cant) for pid, cant in filas])
+        ids = ','.join(str(p) for p, _ in filas)
+        stock = sb.select('productos', select='id,stock', id=f'in.({ids})')
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify({'ok': True, 'grupo': grupo, 'movimientos': len(rows or []),
+                    'stock': {str(s['id']): s['stock'] for s in stock}})
+
+@app.route('/api/cira/movimientos', methods=['GET'])
+def cira_historial_movimientos():
+    """Historial reciente, con el producto de cada movimiento."""
+    filtros = {}
+    if request.args.get('tipo') in ('entrada', 'salida'):
+        filtros['tipo'] = 'eq.' + request.args['tipo']
+    if request.args.get('grupo'):
+        filtros['grupo'] = 'eq.' + ''.join(ch for ch in request.args['grupo'] if ch.isalnum() or ch == '-')
+    try:
+        limite = max(1, min(500, int(request.args.get('limit', 100))))
+    except ValueError:
+        limite = 100
+    try:
+        rows = sb.select('movimientos_inventario',
+                         select='id,tipo,cantidad,motivo,referencia,folio,grupo,usuario,stock_despues,created_at,'
+                                'productos(sku,nombre,descripcion,talla,color,unidad)',
+                         order='created_at.desc,id.desc', limit=limite, **filtros)
+    except Exception as e:
+        return _error_bd(e)
+    return jsonify(rows)
+
+# ══════════════════════════════════════════════════════════
 # COLA DE IMPRESION CIRA (Zebras conectadas a Orange Pi)
 # La pagina deja trabajos en la cola; cada Orange Pi pregunta por los suyos
 # (no necesita IP fija, puertos abiertos ni HTTPS propio).
@@ -958,6 +1100,12 @@ def cira_cola_resultado(trabajo_id):
     except Exception as e:
         return _error_bd(e)
     return jsonify({'ok': True})
+
+@app.route('/movimientos')
+@app.route('/movimientos.html')
+def pagina_movimientos():
+    html = open('movimientos.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
 
 @app.route('/productos')
 @app.route('/etiquetas-productos.html')
