@@ -203,6 +203,8 @@
   .resumen strong { font: 700 28px/1 var(--cond); color: var(--azul-osc); }
   .btn-registrar { width: 100%; padding: 14px 18px; font: 700 21px/1 var(--cond); border: 2px solid var(--azul-osc); border-radius: 6px; box-shadow: 0 3px 0 var(--azul-osc); cursor: pointer; color: #fff; background: #1b7a3a; }
   .btn-registrar.sal { background: #d96d00; }
+  .btn-etiq[hidden] { display: none; }
+  .btn-etiq { display: block; margin-top: 10px; text-align: center; text-decoration: none; font-size: 18px; background: var(--azul-osc); color: var(--amarillo, #ffd400); }
   .btn-registrar:disabled { opacity: .5; cursor: not-allowed; }
   .historial { max-width: 1240px; margin: 0 auto; padding: 0 24px 32px; }
   .historial .paso { overflow: hidden; }
@@ -289,6 +291,7 @@
       <p class="resumen" id="resumen"></p>
       <button class="btn-registrar" id="btnRegistrar">Registrar entrada</button>
       <div class="estado" id="estado" role="status" aria-live="polite"></div>
+      <a class="btn-registrar btn-etiq" id="btnEtiquetas" href="/productos?desde=entrada" hidden>&#127991; Imprimir etiquetas de esta entrada</a>
       <div class="secundarias">
         <a class="btn" href="/productos" style="text-align:center;text-decoration:none">Ir a etiquetas</a>
       </div>
@@ -449,7 +452,9 @@
     var t = tipo(), signo = t === 'entrada' ? 1 : -1;
     var neg = lista.filter(function (it) { return (it.producto.stock || 0) + signo * it.cantidad < 0; }).length;
     if (neg && !confirm(neg + ' producto(s) quedarían con stock negativo. ¿Registrar de todos modos?')) return;
-    var b = $('btnRegistrar'); b.disabled = true; avisar('Registrando…');
+    var b = $('btnRegistrar'); b.disabled = true; avisar('Registrando…'); $('btnEtiquetas').hidden = true;
+    var paraEtiquetas = t !== 'entrada' ? null : { folio: $('folio').value, fecha: new Date().toISOString(),
+      items: lista.map(function (it) { var p = it.producto; return { linea1: p.nombre || '', linea2: p.descripcion || '', talla: p.talla || '', color: p.color || '', codigo: p.codigo_barras || p.sku || '', cant: it.cantidad }; }) };
     api('/api/cira/movimientos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
       tipo: t, motivo: $('motivo').value, referencia: $('referencia').value, folio: $('folio').value, usuario: usuario(),
       items: lista.map(function (it) { return { producto_id: it.producto.id, cantidad: it.cantidad }; })
@@ -457,6 +462,12 @@
       b.disabled = false;
       if (!r.ok) { avisar(r.error || 'No se pudo registrar.', '#c62828'); return; }
       avisar((t === 'entrada' ? 'Entrada' : 'Salida') + ' registrada: ' + r.movimientos + ' producto(s). Stock actualizado.', '#1b7a3a');
+      if (paraEtiquetas) {
+        try { localStorage.setItem('cira_desde_entrada', JSON.stringify(paraEtiquetas)); } catch (e) {}
+        var n = paraEtiquetas.items.reduce(function (a, x) { return a + x.cant; }, 0), h = Math.ceil(n / 6);
+        $('btnEtiquetas').innerHTML = '&#127991; Imprimir etiquetas de esta entrada<br><small style="font:500 14px var(--cond)">' + n + ' etiquetas · ' + h + (h === 1 ? ' hoja' : ' hojas') + '</small>';
+        $('btnEtiquetas').hidden = false;
+      }
       lista = []; $('folio').value = ''; pintarLista(); cargarHistorial(); inp.focus();
     }).catch(function () { b.disabled = false; avisar('No se pudo conectar con el servidor.', '#c62828'); });
   });
