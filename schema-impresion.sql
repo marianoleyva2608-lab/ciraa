@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS trabajos_impresion (
 CREATE INDEX IF NOT EXISTS idx_trabajos_pendientes
     ON trabajos_impresion (impresora, created_at) WHERE estado = 'pendiente';
 
+-- Tipo de impresora (zpl = Zebra, ticket = térmica de 58 mm ESC/POS) y formato del trabajo
+ALTER TABLE impresoras         ADD COLUMN IF NOT EXISTS tipo    TEXT DEFAULT 'zpl';
+ALTER TABLE trabajos_impresion ADD COLUMN IF NOT EXISTS formato TEXT DEFAULT 'zpl';  -- zpl | escpos (base64)
+
 ALTER TABLE impresoras         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trabajos_impresion ENABLE ROW LEVEL SECURITY;
 

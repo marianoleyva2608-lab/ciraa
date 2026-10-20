@@ -2,18 +2,27 @@
 # Instala el worker de impresion CIRA en una Orange Pi (Armbian/Debian/Ubuntu).
 #
 # Uso:
-#   sudo bash install.sh <nombre-impresora> <token> [servidor]
-# Ejemplo:
-#   sudo bash install.sh matriz MI_TOKEN_SECRETO https://pwa-ciraa.c4o2yg.easypanel.host
+#   sudo bash install.sh <nombre-impresora> <token> [zebra|ticket] [servidor]
+# Ejemplos:
+#   sudo bash install.sh matriz MI_TOKEN_SECRETO            (Zebra, ZPL)
+#   sudo bash install.sh caja   MI_TOKEN_SECRETO ticket     (térmica de tickets 58 mm)
 set -euo pipefail
 
 NOMBRE="${1:-}"
 TOKEN="${2:-}"
-SERVIDOR="${3:-https://pwa-ciraa.c4o2yg.easypanel.host}"
+TIPO="zpl"
+SERVIDOR="https://pwa-ciraa.c4o2yg.easypanel.host"
+for a in "${@:3}"; do
+  case "$a" in
+    ticket|tickets|escpos|58) TIPO="ticket" ;;
+    zebra|zpl) TIPO="zpl" ;;
+    http*) SERVIDOR="$a" ;;
+  esac
+done
 
 if [[ $EUID -ne 0 ]]; then echo "Corre con sudo: sudo bash install.sh <nombre> <token>"; exit 1; fi
 if [[ -z "$NOMBRE" || -z "$TOKEN" ]]; then
-  echo "Uso: sudo bash install.sh <nombre-impresora> <token> [servidor]"; exit 1
+  echo "Uso: sudo bash install.sh <nombre-impresora> <token> [zebra|ticket] [servidor]"; exit 1
 fi
 NOMBRE="$(echo "$NOMBRE" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')"
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +48,7 @@ token = $TOKEN
 impresora = $NOMBRE
 dispositivo = /dev/usb/lp0
 intervalo = 2
+tipo = $TIPO
 EOF
 chown root:cira-print /etc/cira-print.conf
 chmod 640 /etc/cira-print.conf
@@ -53,9 +63,9 @@ systemctl --no-pager --lines=8 status cira-print || true
 
 echo
 if [[ -e /dev/usb/lp0 ]]; then
-  echo "OK: Zebra detectada en /dev/usb/lp0"
+  echo "OK: impresora detectada en /dev/usb/lp0"
 else
-  echo "AVISO: no veo /dev/usb/lp0. Conecta la Zebra por USB, enciendela y revisa con: ls /dev/usb/"
+  echo "AVISO: no veo /dev/usb/lp0. Conecta la impresora por USB, enciendela y revisa con: ls /dev/usb/"
 fi
-echo "Listo. Impresora '$NOMBRE' registrada contra $SERVIDOR"
+echo "Listo. Impresora '$NOMBRE' (tipo $TIPO) registrada contra $SERVIDOR"
 echo "Ver registro en vivo: journalctl -u cira-print -f"

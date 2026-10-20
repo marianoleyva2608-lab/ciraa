@@ -858,7 +858,7 @@ def _nombre_impresora(valor):
 def cira_impresoras():
     """Lista de Zebras para el selector de la pagina, con si estan en linea."""
     try:
-        rows = sb.select('impresoras', select='nombre,descripcion,ultima_conexion', activa='is.true', order='nombre.asc')
+        rows = sb.select('impresoras', select='nombre,descripcion,tipo,ultima_conexion', activa='is.true', order='nombre.asc')
     except Exception as e:
         return _error_bd(e)
     ahora = datetime.datetime.now(datetime.timezone.utc)
@@ -878,14 +878,27 @@ def cira_encolar():
     """La pagina de etiquetas manda aqui el ZPL; queda pendiente para su Orange Pi."""
     d = request.get_json(silent=True) or {}
     impresora = _nombre_impresora(d.get('impresora'))
-    zpl = (d.get('zpl') or '').strip()
+    formato = d.get('formato') or 'zpl'
     if not impresora:
         return jsonify({'ok': False, 'error': 'Elige una impresora.'}), 400
-    if not zpl.startswith('^XA') or not zpl.endswith('^XZ') or len(zpl.encode()) > _ZPL_MAX:
-        return jsonify({'ok': False, 'error': 'ZPL invalido.'}), 400
+    if formato == 'escpos':
+        # impresora de tickets: bytes ESC/POS en base64 (se guardan en la columna zpl)
+        contenido = (d.get('datos') or '').strip()
+        try:
+            ok = 0 < len(base64.b64decode(contenido, validate=True)) <= _ZPL_MAX
+        except Exception:
+            ok = False
+        if not ok:
+            return jsonify({'ok': False, 'error': 'Datos de ticket invalidos.'}), 400
+    elif formato == 'zpl':
+        contenido = (d.get('zpl') or '').strip()
+        if not contenido.startswith('^XA') or not contenido.endswith('^XZ') or len(contenido.encode()) > _ZPL_MAX:
+            return jsonify({'ok': False, 'error': 'ZPL invalido.'}), 400
+    else:
+        return jsonify({'ok': False, 'error': 'Formato no soportado.'}), 400
     try:
         rows = sb.insert('trabajos_impresion', {
-            'impresora': impresora, 'zpl': zpl,
+            'impresora': impresora, 'zpl': contenido, 'formato': formato,
             'detalle': d.get('detalle') if isinstance(d.get('detalle'), (dict, list)) else {},
             'usuario': str(d.get('usuario') or '')[:80],
         })
@@ -914,7 +927,8 @@ def cira_cola():
         return jsonify({'ok': False, 'error': 'Falta impresora'}), 400
     try:
         # registrar / actualizar latido de la impresora
-        sb.insert('impresoras', {'nombre': impresora, 'ultima_conexion': _ahora(),
+        tipo = 'ticket' if request.headers.get('X-Printer-Type') == 'ticket' else 'zpl'
+        sb.insert('impresoras', {'nombre': impresora, 'ultima_conexion': _ahora(), 'tipo': tipo,
                                  'version': (request.headers.get('X-Worker-Version') or '')[:20]},
                   upsert=True, on_conflict='nombre', return_rows=False)
         pend = sb.select('trabajos_impresion', select='id', impresora=f'eq.{impresora}',
@@ -925,7 +939,8 @@ def cira_cola():
             tomado = sb.update('trabajos_impresion', {'estado': 'enviado', 'tomado_at': _ahora()},
                                id=f'eq.{t["id"]}', estado='eq.pendiente')
             if tomado:
-                trabajos.append({'id': tomado[0]['id'], 'zpl': tomado[0]['zpl']})
+                trabajos.append({'id': tomado[0]['id'], 'zpl': tomado[0]['zpl'],
+                                 'formato': tomado[0].get('formato') or 'zpl'})
     except Exception as e:
         return _error_bd(e)
     return jsonify({'ok': True, 'trabajos': trabajos})

@@ -233,7 +233,7 @@
     <div class="hoja-marco">
       <canvas id="vista" width="815" height="1215" aria-label="Vista previa de la hoja de etiquetas"></canvas>
     </div>
-    <p class="hoja-pie">Así se lee la hoja. La Zebra la imprime girada 180°, como tu diseño original.</p>
+    <p class="hoja-pie">Así se ven las etiquetas. En la Zebra la hoja sale girada 180°; en la de tickets salen una tras otra en el rollo.</p>
 
     <div class="imprimir">
       <label class="sel-impresora" for="selImpresora">Impresora
@@ -495,32 +495,73 @@
   var lienzo = document.getElementById('vista'), ctx = lienzo.getContext('2d');
   var imgLogo = new Image(); imgLogo.src = LOGO_PNG; imgLogo.onload = function () { pintarVista(); };
 
-  function pintarVista() {
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
-    ctx.strokeStyle = '#999'; ctx.setLineDash([6, 6]); ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(CW, 0); ctx.lineTo(CW, H);
-    ctx.moveTo(0, CH); ctx.lineTo(W, CH); ctx.moveTo(0, CH * 2); ctx.lineTo(W, CH * 2); ctx.stroke();
-    ctx.setLineDash([]);
-    productosDeHoja().forEach(function (p, i) {
-      var o = origen(i);
-      if (imgLogo.complete && imgLogo.naturalWidth) ctx.drawImage(imgLogo, o.x + (CW - LOGO_W) / 2, o.y + LOGO_Y, LOGO_W, LOGO_H);
-      ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      lineasDe(p).forEach(function (L) {
-        if (!L.texto) return;
-        ctx.font = 'bold ' + L.h + 'px Arial';
-        ctx.fillText(L.texto, o.x + CW / 2, o.y + L.y);
-      });
-      var b = barra(p);
-      if (b) {
-        var x = o.x + (CW - b.ancho) / 2, negro = true;
-        b.anchos.forEach(function (a) {
-          if (negro) ctx.fillRect(x, o.y + BAR_Y, a * b.modulo, BAR_H);
-          x += a * b.modulo; negro = !negro;
-        });
-        ctx.font = COD_H + 'px Arial';
-        ctx.fillText(b.codigo, o.x + CW / 2, o.y + COD_Y);
-      }
+  // Dibuja una etiqueta (2x2") con su esquina superior izquierda en (ox, oy).
+  function dibujarEtiqueta(c, p, ox, oy) {
+    c.imageSmoothingEnabled = false;
+    if (imgLogo.complete && imgLogo.naturalWidth) c.drawImage(imgLogo, Math.round(ox + (CW - LOGO_W) / 2), oy + LOGO_Y, LOGO_W, LOGO_H);
+    c.fillStyle = '#000'; c.textAlign = 'center'; c.textBaseline = 'top';
+    lineasDe(p).forEach(function (L) {
+      if (!L.texto) return;
+      c.font = 'bold ' + L.h + 'px Arial';
+      c.fillText(L.texto, ox + CW / 2, oy + L.y);
     });
+    var b = barra(p);
+    if (b) {
+      var x = Math.round(ox + (CW - b.ancho) / 2), negro = true;
+      b.anchos.forEach(function (a) {
+        if (negro) c.fillRect(x, oy + BAR_Y, a * b.modulo, BAR_H);
+        x += a * b.modulo; negro = !negro;
+      });
+      c.font = COD_H + 'px Arial';
+      c.fillText(b.codigo, ox + CW / 2, oy + COD_Y);
+    }
+  }
+
+  function pintarVista() {
+    var tk = esTicket();
+    lienzo.width = tk ? TK_W : W; lienzo.height = tk ? TK_H * 6 + 5 * 24 : H;
+    lienzo.style.maxWidth = tk ? '230px' : ''; lienzo.style.margin = tk ? '0 auto' : '';
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, lienzo.width, lienzo.height);
+    ctx.strokeStyle = '#999'; ctx.setLineDash([6, 6]); ctx.lineWidth = 3;
+    ctx.beginPath();
+    if (tk) { for (var k = 1; k < 6; k++) { var yy = k * (TK_H + 24) - 12; ctx.moveTo(0, yy); ctx.lineTo(TK_W, yy); } }
+    else { ctx.moveTo(CW, 0); ctx.lineTo(CW, H); ctx.moveTo(0, CH); ctx.lineTo(W, CH); ctx.moveTo(0, CH * 2); ctx.lineTo(W, CH * 2); }
+    ctx.stroke(); ctx.setLineDash([]);
+    productosDeHoja().forEach(function (p, i) {
+      if (tk) dibujarEtiqueta(ctx, p, TK_X, i * (TK_H + 24));
+      else { var o = origen(i); dibujarEtiqueta(ctx, p, o.x, o.y); }
+    });
+  }
+
+  // ===== Impresora de tickets 58 mm (ESC/POS) =====
+  // Ancho útil 48 mm = 384 puntos a 203 dpi. La etiqueta mide 372 de texto y
+  // máximo 360 de código de barras, así que cabe sin escalar.
+  var TK_W = 384, TK_H = 376, TK_X = Math.round((TK_W - CW) / 2);
+  function esTicket() { var o = selImp && selImp.selectedOptions[0]; return !!(o && o.dataset.tipo === 'ticket'); }
+  function escposHoja() {
+    var hojas = Math.max(1, Math.min(500, parseInt(document.getElementById('hojas').value, 10) || 1));
+    var cv = document.createElement('canvas'); cv.width = TK_W; cv.height = TK_H;
+    var c = cv.getContext('2d'), partes = [[0x1B, 0x40]];          // ESC @ (inicializar)
+    var bpr = TK_W / 8;
+    for (var h = 0; h < hojas; h++) {
+      productosDeHoja().forEach(function (p) {
+        c.fillStyle = '#fff'; c.fillRect(0, 0, TK_W, TK_H);
+        dibujarEtiqueta(c, p, TK_X, 0);
+        var px = c.getImageData(0, 0, TK_W, TK_H).data;
+        var cab = [0x1D, 0x76, 0x30, 0x00, bpr & 255, bpr >> 8, TK_H & 255, TK_H >> 8]; // GS v 0
+        var datos = new Uint8Array(bpr * TK_H);
+        for (var y = 0; y < TK_H; y++) for (var x = 0; x < TK_W; x++) {
+          var k = (y * TK_W + x) * 4;
+          if (px[k] * 0.3 + px[k + 1] * 0.59 + px[k + 2] * 0.11 < 128) datos[y * bpr + (x >> 3)] |= 0x80 >> (x & 7);
+        }
+        partes.push(cab, datos, [0x1B, 0x64, 0x03]);               // + avanzar 3 líneas
+      });
+    }
+    partes.push([0x1B, 0x64, 0x04, 0x1D, 0x56, 0x42, 0x00]);       // avanzar y cortar (si tiene cortador)
+    var total = partes.reduce(function (a, x) { return a + x.length; }, 0), buf = new Uint8Array(total), pos = 0;
+    partes.forEach(function (x) { buf.set(x, pos); pos += x.length; });
+    var bin = ''; for (var i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+    return btoa(bin);
   }
 
   // ===== Generación de ZPL =====
@@ -583,16 +624,17 @@
       selImp.innerHTML = '';
       if (!lista.length) { selImp.innerHTML = '<option value="">Ninguna impresora conectada todavía</option>'; return; }
       lista.forEach(function (imp) {
-        var o = document.createElement('option'); o.value = imp.nombre;
-        o.textContent = (imp.en_linea ? '● ' : '○ ') + imp.nombre + (imp.descripcion ? ' — ' + imp.descripcion : '') + (imp.en_linea ? '' : ' (sin conexión)');
+        var o = document.createElement('option'); o.value = imp.nombre; o.dataset.tipo = imp.tipo || 'zpl';
+        o.textContent = (imp.en_linea ? '● ' : '○ ') + imp.nombre + (imp.descripcion ? ' — ' + imp.descripcion : '') + (imp.tipo === 'ticket' ? ' · ticket 58 mm' : '') + (imp.en_linea ? '' : ' (sin conexión)');
         selImp.appendChild(o);
       });
       if (previa && lista.some(function (x) { return x.nombre === previa; })) selImp.value = previa;
+      pintarVista();
     }).catch(function () {
       selImp.innerHTML = '<option value="">No se pudo cargar la lista (abre la página publicada)</option>';
     });
   }
-  selImp.addEventListener('change', function () { try { localStorage.setItem(CLAVE_IMP, selImp.value); } catch (e) {} });
+  selImp.addEventListener('change', function () { try { localStorage.setItem(CLAVE_IMP, selImp.value); } catch (e) {} pintarVista(); });
   cargarImpresoras(); setInterval(cargarImpresoras, 20000);
 
   function seguirTrabajo(id, intentos) {
@@ -614,7 +656,8 @@
       productos: productosDeHoja().map(function (p) { return p.codigo; }) };
     avisar('Enviando a la cola…');
     fetch('/api/cira/imprimir', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ impresora: imp, zpl: zplHoja(), detalle: detalle, usuario: usuario }) })
+      body: JSON.stringify(esTicket() ? { impresora: imp, formato: 'escpos', datos: escposHoja(), detalle: detalle, usuario: usuario }
+                                      : { impresora: imp, formato: 'zpl', zpl: zplHoja(), detalle: detalle, usuario: usuario }) })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.ok) { avisar('En cola, esperando a la impresora…'); seguirTrabajo(d.id, 0); }

@@ -12,7 +12,8 @@ trabajos en una cola en el servidor de CIRA, y cada Orange Pi recoge los suyos c
 ```bash
 git clone https://github.com/marianoleyva2608-lab/ciraa.git
 cd ciraa/orangepi
-sudo bash install.sh <nombre> <CIRA_PRINT_TOKEN>
+sudo bash install.sh <nombre> <CIRA_PRINT_TOKEN>            # Zebra
+sudo bash install.sh <nombre> <CIRA_PRINT_TOKEN> ticket     # térmica de tickets 58 mm (ESC/POS)
 ```
 `<nombre>` identifica la impresora en la página (ej. `matriz`, `taller`, `sucursal-norte`).
 

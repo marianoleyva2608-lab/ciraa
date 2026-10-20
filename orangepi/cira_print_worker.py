@@ -10,6 +10,7 @@ No necesita IP fija ni puertos abiertos: solo salida a internet.
 Configuracion: /etc/cira-print.conf  (lo crea install.sh)
 Solo usa la libreria estandar de Python 3.
 """
+import base64
 import configparser
 import json
 import os
@@ -19,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = '1.0'
+VERSION = '1.1'
 CONF = os.environ.get('CIRA_PRINT_CONF', '/etc/cira-print.conf')
 
 
@@ -38,6 +39,7 @@ def cargar_config():
         'impresora': s.get('impresora', ''),
         'dispositivo': s.get('dispositivo', '/dev/usb/lp0'),
         'intervalo': s.getfloat('intervalo', 2.0),
+        'tipo': s.get('tipo', 'zpl').strip().lower(),   # zpl (Zebra) | ticket (58 mm ESC/POS)
     }
     faltan = [k for k in ('servidor', 'token', 'impresora') if not cfg[k]]
     if faltan:
@@ -51,6 +53,7 @@ def http(cfg, metodo, ruta, cuerpo=None, timeout=20):
     req = urllib.request.Request(url, data=datos, method=metodo, headers={
         'X-Print-Token': cfg['token'],
         'X-Worker-Version': VERSION,
+        'X-Printer-Type': cfg['tipo'],
         'Content-Type': 'application/json',
         'User-Agent': 'cira-print-worker/' + VERSION,
     })
@@ -58,18 +61,24 @@ def http(cfg, metodo, ruta, cuerpo=None, timeout=20):
         return json.loads(r.read().decode() or '{}')
 
 
-def imprimir(cfg, zpl):
+def imprimir(cfg, trabajo):
     dev = cfg['dispositivo']
     if not os.path.exists(dev):
-        raise RuntimeError(f'No se encuentra la Zebra en {dev} (revisa el cable USB y que este encendida)')
+        raise RuntimeError(f'No se encuentra la impresora en {dev} (revisa el cable USB y que este encendida)')
+    formato = trabajo.get('formato') or 'zpl'
+    if formato == 'escpos':
+        datos = base64.b64decode(trabajo['zpl'])
+    else:
+        datos = trabajo['zpl'].encode('utf-8')
     with open(dev, 'wb', buffering=0) as f:
-        f.write(zpl.encode('utf-8'))
+        for i in range(0, len(datos), 4096):   # en bloques: las de tickets tienen buffer chico
+            f.write(datos[i:i + 4096])
 
 
 def main():
     cfg = cargar_config()
     ruta_cola = '/api/cira/cola?impresora=' + urllib.parse.quote(cfg['impresora'])
-    log(f'CIRA print worker {VERSION} | impresora={cfg["impresora"]} | servidor={cfg["servidor"]} | {cfg["dispositivo"]}')
+    log(f'CIRA print worker {VERSION} | impresora={cfg["impresora"]} ({cfg["tipo"]}) | servidor={cfg["servidor"]} | {cfg["dispositivo"]}')
     espera = cfg['intervalo']
     while True:
         try:
@@ -77,7 +86,7 @@ def main():
             espera = cfg['intervalo']
             for t in resp.get('trabajos', []):
                 try:
-                    imprimir(cfg, t['zpl'])
+                    imprimir(cfg, t)
                     log(f'Trabajo {t["id"]} impreso')
                     http(cfg, 'POST', f'/api/cira/cola/{t["id"]}', {'ok': True})
                 except Exception as e:
