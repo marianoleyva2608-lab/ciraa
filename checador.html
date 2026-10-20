@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Checador - CIRA</title>
+<link rel="icon" href="/cira-icon-web.svg">
+<meta name="theme-color" content="#162f4e">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --azul: #3078c6; --azul-osc: #162f4e; --azul-lema: #26508a;
+    --amarillo: #f5ef03; --naranja: #f58612; --cian: #70d0dc;
+    --ok: #1b7a3a; --error: #c62828;
+    --cond: 'Barlow Condensed', 'Arial Narrow', Arial, sans-serif;
+    --texto: 'Barlow', 'Segoe UI', Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; color: #fff; font: 16px/1.4 var(--texto); overflow-x: hidden;
+    background: linear-gradient(160deg, var(--azul-osc) 0%, var(--azul-lema) 60%, var(--azul) 100%);
+    display: flex; flex-direction: column; -webkit-user-select: none; user-select: none;
+  }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--cian); outline-offset: 2px; }
+  .franja { height: 10px; background: linear-gradient(90deg, var(--amarillo), var(--naranja)); flex: 0 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 24px; }
+  header img { height: 56px; background: #fff; border-radius: 10px; padding: 4px 8px; }
+  .suc { font: 600 15px var(--cond); letter-spacing: .5px; color: #cfe0f4; text-transform: uppercase; }
+
+  main { flex: 1; display: grid; grid-template-columns: 1fr minmax(320px, 420px); gap: 40px; align-items: center;
+         max-width: 1100px; width: 100%; margin: 0 auto; padding: 8px 24px 28px; }
+  .reloj { text-align: center; }
+  .reloj .hora { font: 700 clamp(72px, 13vw, 150px)/1 var(--cond); letter-spacing: 2px; font-variant-numeric: tabular-nums; }
+  .reloj .seg { font-size: .4em; color: var(--amarillo); vertical-align: top; margin-left: 6px; }
+  .reloj .fecha { font: 600 clamp(20px, 2.6vw, 28px) var(--cond); color: #d2e2f5; margin-top: 6px; }
+  .reloj h1 { font: 700 30px var(--cond); margin: 0 0 6px; color: var(--amarillo); letter-spacing: 1px; }
+
+  .tarjeta { background: #fff; color: #162f4e; border-radius: 14px; padding: 22px; box-shadow: 0 18px 40px rgba(0,0,0,.28); }
+  .paso { font: 700 22px var(--cond); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: baseline; }
+  .paso small { font: 500 14px var(--texto); color: #5b6b7b; white-space: nowrap; }
+  .pantalla { height: 66px; border: 3px solid #c9d3dd; border-radius: 10px; display: flex; align-items: center; justify-content: center;
+              font: 700 40px var(--cond); letter-spacing: 8px; margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .pantalla.vacia { color: #a3b0bd; letter-spacing: 1px; font-size: 22px; font-weight: 600; }
+  .teclado { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .teclado button { height: 64px; border: 0; border-radius: 10px; background: #e9eef3; color: #162f4e; font: 700 30px var(--cond); cursor: pointer; touch-action: manipulation; }
+  .teclado button:active { background: #d2dbe4; transform: translateY(1px); }
+  .teclado .borrar { font-size: 20px; }
+  .teclado .ok { background: var(--azul-osc); color: var(--amarillo); font-size: 24px; }
+  .teclado .ok:disabled { opacity: .45; }
+  .msg { min-height: 22px; margin-top: 12px; text-align: center; font-weight: 600; color: var(--error); }
+
+  /* Resultado */
+  .resultado { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; z-index: 5; }
+  .resultado.ver { display: flex; }
+  .resultado .caja { width: min(640px, 100%); border-radius: 18px; padding: 36px 28px; text-align: center; color: #fff; box-shadow: 0 24px 60px rgba(0,0,0,.4); }
+  .resultado .tipo { font: 700 28px var(--cond); letter-spacing: 3px; text-transform: uppercase; opacity: .9; }
+  .resultado .nombre { font: 700 clamp(34px, 6vw, 54px)/1.05 var(--cond); margin: 10px 0; }
+  .resultado .hora { font: 700 64px/1 var(--cond); }
+  .resultado .extra { font-size: 20px; font-weight: 600; margin-top: 12px; }
+  .entrada .caja { background: var(--ok); }
+  .salida .caja { background: var(--azul); }
+  .retardo .caja { background: var(--naranja); }
+
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; gap: 18px; }
+    main { padding: 0 14px 18px; }
+    header { padding: 10px 14px; }
+    .reloj h1 { font-size: 20px; margin: 0; }
+    .reloj .hora { font-size: 56px; }
+    .reloj .fecha { font-size: 17px; margin-top: 2px; }
+    header img { height: 40px; }
+    .tarjeta { padding: 16px; }
+    .paso { font-size: 19px; }
+    .pantalla { height: 54px; font-size: 32px; }
+    .teclado { gap: 8px; }
+    .teclado button { height: 54px; font-size: 26px; }
+    .teclado .borrar .txt { display: none; }
+    .teclado .ok { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="franja" aria-hidden="true"></div>
+<header>
+  <img src="/logo-cira.png" alt="CIRA" onerror="this.style.display='none'">
+  <span class="suc" id="suc"></span>
+</header>
+
+<main>
+  <section class="reloj">
+    <h1>CHECADOR</h1>
+    <div class="hora" id="hora">--:--</div>
+    <div class="fecha" id="fecha"></div>
+  </section>
+
+  <section class="tarjeta" aria-live="polite">
+    <p class="paso"><span id="pasoTit">Tu número de empleado</span><small id="pasoSub">Paso 1 de 2</small></p>
+    <div class="pantalla vacia" id="pantalla">Teclea tu número</div>
+    <div class="teclado" id="teclado">
+      <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+      <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+      <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+      <button class="borrar" data-k="del" aria-label="Borrar">&#9003;<span class="txt"> Borrar</span></button>
+      <button data-k="0">0</button>
+      <button class="ok" data-k="ok" id="btnOk" disabled>Siguiente</button>
+    </div>
+    <div class="msg" id="msg" role="status"></div>
+  </section>
+</main>
+
+<div class="resultado" id="resultado" role="alert">
+  <div class="caja">
+    <div class="tipo" id="rTipo"></div>
+    <div class="nombre" id="rNombre"></div>
+    <div class="hora" id="rHora"></div>
+    <div class="extra" id="rExtra"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  // Sucursal: /checador?sucursal=matriz (se recuerda en este equipo)
+  var suc = '';
+  try {
+    var q = new URLSearchParams(location.search).get('sucursal');
+    if (q !== null) localStorage.setItem('cira_checador_suc', q.trim());
+    suc = localStorage.getItem('cira_checador_suc') || '';
+  } catch (e) {}
+  $('suc').textContent = suc ? 'Sucursal ' + suc : '';
+
+  function reloj() {
+    var d = new Date();
+    var h = d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Mexico_City' });
+    var s = d.toLocaleTimeString('es-MX', { second: '2-digit', timeZone: 'America/Mexico_City' }).slice(-2);
+    $('hora').innerHTML = h + '<span class="seg">' + s + '</span>';
+    var f = d.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Mexico_City' });
+    $('fecha').textContent = f.charAt(0).toUpperCase() + f.slice(1);
+  }
+  reloj(); setInterval(reloj, 1000);
+
+  var paso = 1, numero = '', pin = '', ocupado = false, tReset = null;
+  function pintar() {
+    var v = paso === 1 ? numero : pin.replace(/./g, '•');
+    $('pasoTit').textContent = paso === 1 ? 'Tu número de empleado' : 'Tu PIN';
+    $('pasoSub').textContent = 'Paso ' + paso + ' de 2';
+    $('pantalla').textContent = v || (paso === 1 ? 'Teclea tu número' : 'Teclea tu PIN');
+    $('pantalla').classList.toggle('vacia', !v);
+    $('btnOk').textContent = paso === 1 ? 'Siguiente' : 'Checar';
+    $('btnOk').disabled = !(paso === 1 ? numero : pin.length >= 4) || ocupado;
+  }
+  function reiniciar() { paso = 1; numero = ''; pin = ''; ocupado = false; pintar(); }
+  function inactividad() { clearTimeout(tReset); tReset = setTimeout(function () { reiniciar(); $('msg').textContent = ''; }, 20000); }
+
+  function tecla(k) {
+    if (ocupado || $('resultado').classList.contains('ver')) return;
+    $('msg').textContent = ''; inactividad();
+    if (k === 'del') {
+      if (paso === 2 && !pin) { paso = 1; }
+      else if (paso === 1) numero = numero.slice(0, -1); else pin = pin.slice(0, -1);
+    } else if (k === 'ok') {
+      if (paso === 1 && numero) paso = 2;
+      else if (paso === 2 && pin.length >= 4) return enviar();
+    } else if (/^\d$/.test(k)) {
+      if (paso === 1 && numero.length < 8) numero += k;
+      else if (paso === 2 && pin.length < 8) pin += k;
+    }
+    pintar();
+  }
+  $('teclado').addEventListener('click', function (e) { var b = e.target.closest('button'); if (b) tecla(b.dataset.k); });
+  document.addEventListener('keydown', function (e) {
+    if (/^\d$/.test(e.key)) tecla(e.key);
+    else if (e.key === 'Backspace') { e.preventDefault(); tecla('del'); }
+    else if (e.key === 'Enter') tecla('ok');
+    else if (e.key === 'Escape') { reiniciar(); $('msg').textContent = ''; }
+  });
+
+  function enviar() {
+    ocupado = true; pintar(); $('msg').style.color = '#5b6b7b'; $('msg').textContent = 'Checando…';
+    fetch('/api/cira/checador', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ numero: numero, pin: pin, sucursal: suc }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Error ' + r.status }; }); })
+      .then(function (d) {
+        $('msg').style.color = '';
+        if (!d.ok) { $('msg').textContent = d.error || 'No se pudo checar.'; pin = ''; ocupado = false; pintar(); return; }
+        $('msg').textContent = '';
+        mostrar(d); reiniciar();
+      })
+      .catch(function () { $('msg').style.color = ''; $('msg').textContent = 'Sin conexión. Intenta de nuevo.'; pin = ''; ocupado = false; pintar(); });
+  }
+
+  function nombrePila(n) { var w = String(n || '').trim().split(/\s+/)[0] || ''; return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase(); }
+  function mostrar(d) {
+    var r = $('resultado');
+    r.className = 'resultado ver ' + (d.retardo_min ? 'retardo' : d.tipo);
+    $('rTipo').textContent = d.tipo === 'entrada' ? (d.retardo_min ? 'Entrada con retardo' : 'Entrada') : 'Salida';
+    $('rNombre').textContent = (d.tipo === 'entrada' ? '¡Buen día, ' : '¡Hasta luego, ') + nombrePila(d.nombre) + '!';
+    $('rHora').textContent = d.hora;
+    $('rExtra').textContent = d.retardo_min ? d.retardo_min + ' min tarde' : (d.tipo === 'entrada' ? 'A tiempo' : 'Buen descanso');
+    setTimeout(function () { r.className = 'resultado'; }, 3500);
+  }
+  pintar();
+})();
+</script>
+</body>
+</html>

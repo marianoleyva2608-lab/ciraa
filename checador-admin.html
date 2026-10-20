@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checador · Asistencia - CIRA</title>
+<link rel="icon" href="/cira-icon-web.svg">
+<meta name="theme-color" content="#162f4e">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --azul: #3078c6; --azul-osc: #162f4e; --azul-lema: #26508a;
+    --amarillo: #f5ef03; --naranja: #f58612; --cian: #70d0dc;
+    --tinta: #231f20; --gris: #555859; --linea: #d5dde3; --fondo: #f2f4f7; --papel: #fff;
+    --ok: #1b7a3a; --error: #c62828;
+    --cond: 'Barlow Condensed', 'Arial Narrow', Arial, sans-serif;
+    --texto: 'Barlow', 'Segoe UI', Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--tinta); font: 15px/1.45 var(--texto); }
+  button, input, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--cian); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  .barra { background: linear-gradient(100deg, var(--azul-osc) 0%, var(--azul-lema) 55%, var(--azul) 100%); color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .barra img { height: 58px; background: #fff; border-radius: 10px; padding: 4px 8px; }
+  .barra h1 { font: 700 26px/1.05 var(--cond); margin: 0; }
+  .barra p { margin: 2px 0 0; font-size: 13px; color: #d2e2f5; }
+  .barra .der { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .barra a, .barra button.lnk { color: #fff; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.3); border-radius: 4px; padding: 7px 12px; text-decoration: none; font-weight: 600; font-size: 14px; cursor: pointer; }
+  .franja { height: 8px; background: linear-gradient(90deg, var(--amarillo), var(--naranja)); }
+  main { max-width: 1240px; margin: 0 auto; padding: 22px 24px 40px; }
+  .tabs { display: inline-flex; border: 2px solid var(--azul-osc); border-radius: 4px; overflow: hidden; margin-bottom: 18px; flex-wrap: wrap; }
+  .tabs button { border: 0; background: #fff; padding: 9px 18px; font-weight: 700; cursor: pointer; }
+  .tabs button.on { background: var(--azul-osc); color: var(--amarillo); }
+  .panel { background: var(--papel); border: 1px solid var(--linea); border-radius: 6px; padding: 18px 20px; margin-bottom: 18px; }
+  .panel h2 { font: 700 21px/1.1 var(--cond); margin: 0 0 4px; color: var(--azul-osc); }
+  .ayuda { font-size: 13px; color: var(--gris); margin: 0 0 14px; }
+  .btn { border: 0; border-radius: 4px; padding: 9px 16px; cursor: pointer; font-weight: 600; font-size: 14px; background: #e3e9ee; }
+  .btn:hover { background: #d4dde4; }
+  .btn-primario { background: var(--azul); color: #fff; }
+  .btn-primario:hover { background: #2766aa; }
+  .peligro { background: none; border: 0; color: var(--error); font-weight: 600; cursor: pointer; padding: 4px 6px; }
+  .tabla-wrap { overflow-x: auto; border: 1px solid var(--linea); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; background: #eef2f6; font-weight: 600; color: var(--azul-osc); padding: 8px 10px; white-space: nowrap; }
+  td { padding: 8px 10px; border-top: 1px solid #e6ebf0; vertical-align: middle; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.click { cursor: pointer; } tr.click:hover td { background: #f6f9fc; }
+  .vacio { text-align: center; color: var(--gris); padding: 18px; }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 700; }
+  .c-ok { background: #e3f3e8; color: var(--ok); } .c-ret { background: #fff0de; color: #a85500; }
+  .c-sal { background: #e4eefa; color: var(--azul-lema); } .c-no { background: #f1f3f5; color: #6b7682; }
+  .c-inac { background: #fde8e8; color: var(--error); }
+  .form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--azul-osc); }
+  .form input, .form select, .filtros input, .filtros select { padding: 8px 10px; border: 2px solid #c9d3dd; border-radius: 4px; background: #fff; }
+  .form .acciones { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .filtros { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 14px; }
+  .filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--azul-osc); }
+  .estado { font-weight: 600; font-size: 14px; }
+  .resumen { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .resumen div { background: #f6f8fa; border: 1px solid var(--linea); border-radius: 6px; padding: 10px 14px; min-width: 130px; }
+  .resumen b { display: block; font: 700 28px/1 var(--cond); color: var(--azul-osc); }
+  .resumen span { font-size: 13px; color: var(--gris); }
+  .login { max-width: 380px; margin: 50px auto; }
+  .login label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; margin-bottom: 12px; color: var(--azul-osc); }
+  .login input { padding: 10px 12px; border: 2px solid #c9d3dd; border-radius: 4px; }
+  @media (max-width: 860px) { .form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 520px) { main { padding: 16px; } .form { grid-template-columns: 1fr; } .barra .der { margin-left: 0; } }
+</style>
+</head>
+<body>
+<header class="barra">
+  <img src="/logo-cira.png" alt="CIRA" onerror="this.style.display='none'">
+  <div>
+    <h1>Checador · Asistencia</h1>
+    <p>Tu almacén de ¡seguridad! · Empleados, checadas del día y reporte de asistencia</p>
+  </div>
+  <div class="der">
+    <a href="/checador" target="_blank" rel="noopener">Abrir checador &#8599;</a>
+    <a href="/">Inicio</a>
+    <button class="lnk" id="btnSalir" hidden>Salir</button>
+  </div>
+</header>
+<div class="franja" aria-hidden="true"></div>
+
+<main>
+  <!-- Acceso -->
+  <section class="panel login" id="vLogin">
+    <h2>Acceso de administrador</h2>
+    <p class="ayuda">Entra con el email y PIN de tu cuenta de CIRA (rol administrador).</p>
+    <form id="fLogin">
+      <label>Email <input type="email" id="lEmail" autocomplete="username" required></label>
+      <label>PIN <input type="password" id="lPin" inputmode="numeric" autocomplete="current-password" required></label>
+      <button class="btn btn-primario" style="width:100%">Entrar</button>
+      <p class="estado" id="lMsg" style="color:var(--error)"></p>
+    </form>
+  </section>
+
+  <div id="vApp" hidden>
+    <div class="tabs" role="tablist">
+      <button class="on" data-v="hoy">Hoy</button>
+      <button data-v="reporte">Reporte</button>
+      <button data-v="empleados">Empleados</button>
+    </div>
+
+    <!-- HOY -->
+    <section id="tHoy">
+      <div class="resumen" id="hoyResumen"></div>
+      <div class="panel">
+        <h2>Asistencia de hoy</h2>
+        <p class="ayuda" id="hoyFecha">Se actualiza solo cada 30 segundos.</p>
+        <div class="tabla-wrap"><table>
+          <thead><tr><th>Núm.</th><th>Empleado</th><th>Entrada</th><th>Salida</th><th class="num">Horas</th><th>Estado</th></tr></thead>
+          <tbody id="hoyTabla"><tr><td colspan="6" class="vacio">Cargando…</td></tr></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- REPORTE -->
+    <section id="tReporte" hidden>
+      <div class="panel">
+        <h2>Reporte de asistencia</h2>
+        <p class="ayuda">Faltas = días de lunes a sábado sin ninguna checada (no cuenta domingos).</p>
+        <div class="filtros">
+          <label>Desde <input type="date" id="rDesde"></label>
+          <label>Hasta <input type="date" id="rHasta"></label>
+          <label>Empleado <select id="rEmp"><option value="">Todos</option></select></label>
+          <button class="btn" data-rango="semana">Esta semana</button>
+          <button class="btn" data-rango="quincena">Quincena</button>
+          <button class="btn" data-rango="mes">Este mes</button>
+          <button class="btn btn-primario" id="rVer">Ver reporte</button>
+          <button class="btn" id="rCsv">Descargar Excel (CSV)</button>
+        </div>
+        <div class="tabla-wrap"><table>
+          <thead><tr><th>Núm.</th><th>Empleado</th><th class="num">Días</th><th class="num">Faltas</th><th class="num">Retardos</th><th class="num">Min. tarde</th><th class="num">Horas</th><th>Sin salida</th></tr></thead>
+          <tbody id="rTabla"><tr><td colspan="8" class="vacio">Elige un rango y da clic en Ver reporte.</td></tr></tbody>
+        </table></div>
+      </div>
+      <div class="panel">
+        <h2>Detalle por día</h2>
+        <p class="ayuda">Cada checada del rango. Si alguien olvidó checar, agrégala a mano abajo; queda marcada como manual.</p>
+        <div class="tabla-wrap"><table>
+          <thead><tr><th>Fecha</th><th>Empleado</th><th>Entrada</th><th>Salida</th><th class="num">Horas</th><th>Notas</th><th></th></tr></thead>
+          <tbody id="dTabla"><tr><td colspan="7" class="vacio">—</td></tr></tbody>
+        </table></div>
+        <h2 style="margin-top:18px;font-size:18px">Checada manual</h2>
+        <div class="filtros" style="margin-top:8px">
+          <label>Empleado <select id="mEmp"></select></label>
+          <label>Tipo <select id="mTipo"><option value="entrada">Entrada</option><option value="salida">Salida</option></select></label>
+          <label>Fecha <input type="date" id="mFecha"></label>
+          <label>Hora <input type="time" id="mHora"></label>
+          <label>Motivo <input id="mNota" placeholder="Olvidó checar"></label>
+          <button class="btn btn-primario" id="mGuardar">Agregar</button>
+          <span class="estado" id="mMsg"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- EMPLEADOS -->
+    <section id="tEmpleados" hidden>
+      <div class="panel">
+        <h2 id="eTit">Nuevo empleado</h2>
+        <p class="ayuda">El número y el PIN son los que teclea en el checador. Deja el número vacío y se asigna solo.</p>
+        <form class="form" id="fEmp">
+          <input type="hidden" id="eId">
+          <label>Número <input id="eNumero" inputmode="numeric" placeholder="Automático"></label>
+          <label style="grid-column: span 2">Nombre completo <input id="eNombre" required></label>
+          <label>PIN (4+ números) <input id="ePin" inputmode="numeric" placeholder=""></label>
+          <label>Puesto <input id="ePuesto"></label>
+          <label>Sucursal <input id="eSucursal"></label>
+          <label>Hora de entrada <input type="time" id="eEntrada" value="09:00"></label>
+          <label>Hora de salida <input type="time" id="eSalida" value="18:00"></label>
+          <label>Tolerancia (min) <input type="number" id="eTol" min="0" max="240" value="10"></label>
+          <label>Estado <select id="eActivo"><option value="1">Activo</option><option value="0">Baja</option></select></label>
+          <div class="acciones">
+            <button class="btn btn-primario" id="eGuardar">Guardar</button>
+            <button type="button" class="btn" id="eNuevo">Limpiar / nuevo</button>
+            <span class="estado" id="eMsg"></span>
+          </div>
+        </form>
+      </div>
+      <div class="panel">
+        <h2>Empleados</h2>
+        <p class="ayuda">Da clic en un empleado para editarlo o cambiarle el PIN.</p>
+        <div class="tabla-wrap"><table>
+          <thead><tr><th>Núm.</th><th>Nombre</th><th>Puesto</th><th>Sucursal</th><th>Horario</th><th class="num">Tolerancia</th><th>Estado</th></tr></thead>
+          <tbody id="eTabla"><tr><td colspan="7" class="vacio">Cargando…</td></tr></tbody>
+        </table></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(t) { var d = document.createElement('div'); d.textContent = t == null ? '' : String(t); return d.innerHTML; }
+  var cred = null;
+  try { cred = JSON.parse(sessionStorage.getItem('cira_admin') || 'null'); } catch (e) {}
+
+  function api(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'Content-Type': 'application/json', 'X-Admin-Email': cred ? cred.email : '', 'X-Admin-Pin': cred ? cred.pin : '' }, opts.headers || {});
+    return fetch(url, opts).then(function (r) {
+      return r.json().catch(function () { return { ok: false, error: 'Error ' + r.status }; }).then(function (d) {
+        if (r.status === 403) { salir(); throw new Error(d.error); }
+        return d;
+      });
+    });
+  }
+
+  // ---------- Fechas (hora de CDMX) ----------
+  function hoyISO() { return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' }); }
+  function sumaDias(iso, n) { var d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  function diaSemana(iso) { return new Date(iso + 'T12:00:00Z').getUTCDay(); }
+  function horaLocal(ts) { return new Date(ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Mexico_City' }); }
+  function fechaBonita(iso) { return new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); }
+  function horasTxt(min) { if (!min) return '—'; return Math.floor(min / 60) + ':' + String(Math.round(min % 60)).padStart(2, '0'); }
+
+  // Agrupa checadas por empleado y día: pares entrada/salida
+  function porDia(checadas) {
+    var dias = {};
+    checadas.forEach(function (c) {
+      var k = c.empleado_id + '|' + c.fecha;
+      (dias[k] = dias[k] || { empleado_id: c.empleado_id, fecha: c.fecha, emp: c.empleados || {}, items: [] }).items.push(c);
+    });
+    return Object.keys(dias).map(function (k) {
+      var d = dias[k], min = 0, abierta = null, ent = null, sal = null, retardo = 0, notas = [];
+      d.items.forEach(function (c) {
+        if (c.tipo === 'entrada') { abierta = c; if (!ent) { ent = c; retardo = c.retardo_min || 0; } }
+        else { sal = c; if (abierta) { min += (new Date(c.hora) - new Date(abierta.hora)) / 60000; abierta = null; } }
+        if (c.nota) notas.push(c.nota);
+      });
+      d.entrada = ent; d.salida = sal; d.minutos = min; d.retardo = retardo; d.sinSalida = !!abierta; d.notas = notas;
+      return d;
+    }).sort(function (a, b) { return a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.emp.nombre || '').localeCompare(b.emp.nombre || ''); });
+  }
+
+  // ---------- Acceso ----------
+  function entrar() { $('vLogin').hidden = true; $('vApp').hidden = false; $('btnSalir').hidden = false; cargarEmpleados().then(cargarHoy); }
+  function salir() { cred = null; try { sessionStorage.removeItem('cira_admin'); } catch (e) {} $('vApp').hidden = true; $('vLogin').hidden = false; $('btnSalir').hidden = true; }
+  $('btnSalir').addEventListener('click', salir);
+  try { var u = JSON.parse(localStorage.getItem('mantos_user') || 'null'); if (u && u.email) $('lEmail').value = u.email; } catch (e) {}
+  $('fLogin').addEventListener('submit', function (e) {
+    e.preventDefault(); $('lMsg').textContent = '';
+    cred = { email: $('lEmail').value.trim().toLowerCase(), pin: $('lPin').value.trim() };
+    fetch('/api/cira/admin/verificar', { method: 'POST', headers: { 'X-Admin-Email': cred.email, 'X-Admin-Pin': cred.pin } })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { $('lMsg').textContent = d.error || 'No autorizado'; cred = null; return; }
+        try { sessionStorage.setItem('cira_admin', JSON.stringify(cred)); } catch (e) {}
+        $('lPin').value = ''; entrar();
+      }).catch(function () { $('lMsg').textContent = 'No se pudo conectar con el servidor.'; });
+  });
+
+  // ---------- Pestañas ----------
+  document.querySelectorAll('.tabs button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.tabs button').forEach(function (x) { x.classList.toggle('on', x === b); });
+      $('tHoy').hidden = b.dataset.v !== 'hoy'; $('tReporte').hidden = b.dataset.v !== 'reporte'; $('tEmpleados').hidden = b.dataset.v !== 'empleados';
+      if (b.dataset.v === 'hoy') cargarHoy();
+      if (b.dataset.v === 'reporte' && !$('rDesde').value) { rango('semana'); verReporte(); }
+    });
+  });
+
+  // ---------- Empleados ----------
+  var empleados = [];
+  function cargarEmpleados() {
+    return api('/api/cira/empleados').then(function (rows) {
+      if (!Array.isArray(rows)) { $('eTabla').innerHTML = '<tr><td colspan="7" class="vacio">' + esc(rows.error || 'Error') + '</td></tr>'; return; }
+      empleados = rows;
+      $('eTabla').innerHTML = rows.length ? '' : '<tr><td colspan="7" class="vacio">Aún no hay empleados. Da de alta el primero arriba.</td></tr>';
+      rows.forEach(function (e) {
+        var tr = document.createElement('tr'); tr.className = 'click';
+        tr.innerHTML = '<td>' + esc(e.numero) + '</td><td>' + esc(e.nombre) + '</td><td>' + esc(e.puesto) + '</td><td>' + esc(e.sucursal) +
+          '</td><td>' + esc((e.hora_entrada || '').slice(0, 5) + ' – ' + (e.hora_salida || '').slice(0, 5)) + '</td><td class="num">' + esc(e.tolerancia_min) + ' min</td><td>' +
+          (e.activo ? '<span class="chip c-ok">Activo</span>' : '<span class="chip c-inac">Baja</span>') + '</td>';
+        tr.addEventListener('click', function () { editar(e); });
+        $('eTabla').appendChild(tr);
+      });
+      var opts = rows.map(function (e) { return '<option value="' + e.id + '">' + esc(e.numero + ' · ' + e.nombre) + '</option>'; }).join('');
+      $('rEmp').innerHTML = '<option value="">Todos</option>' + opts; $('mEmp').innerHTML = opts;
+    }).catch(function () {});
+  }
+  function limpiar() {
+    $('fEmp').reset(); $('eId').value = ''; $('eTit').textContent = 'Nuevo empleado'; $('ePin').placeholder = ''; $('eNumero').disabled = false; $('eMsg').textContent = '';
+  }
+  function editar(e) {
+    $('eId').value = e.id; $('eNumero').value = e.numero; $('eNumero').disabled = true; $('eNombre').value = e.nombre;
+    $('ePin').value = ''; $('ePin').placeholder = 'Dejar vacío = no cambiar'; $('ePuesto').value = e.puesto || ''; $('eSucursal').value = e.sucursal || '';
+    $('eEntrada').value = (e.hora_entrada || '09:00').slice(0, 5); $('eSalida').value = (e.hora_salida || '18:00').slice(0, 5);
+    $('eTol').value = e.tolerancia_min; $('eActivo').value = e.activo ? '1' : '0';
+    $('eTit').textContent = 'Editar: ' + e.nombre; $('eMsg').textContent = ''; window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  $('eNuevo').addEventListener('click', limpiar);
+  $('fEmp').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var id = $('eId').value, body = { nombre: $('eNombre').value, puesto: $('ePuesto').value, sucursal: $('eSucursal').value,
+      hora_entrada: $('eEntrada').value, hora_salida: $('eSalida').value, tolerancia_min: $('eTol').value, activo: $('eActivo').value === '1' };
+    if ($('ePin').value) body.pin = $('ePin').value;
+    if (!id) body.numero = $('eNumero').value;
+    $('eMsg').style.color = '#555'; $('eMsg').textContent = 'Guardando…';
+    api(id ? '/api/cira/empleados/' + id : '/api/cira/empleados', { method: id ? 'PUT' : 'POST', body: JSON.stringify(body) }).then(function (d) {
+      if (!d.ok) { $('eMsg').style.color = 'var(--error)'; $('eMsg').textContent = d.error; return; }
+      var msg = id ? 'Cambios guardados.' : 'Alta lista: número ' + d.empleado.numero + '. Con ese número y su PIN ya puede checar.';
+      limpiar(); $('eMsg').style.color = 'var(--ok)'; $('eMsg').textContent = msg; cargarEmpleados();
+    }).catch(function () {});
+  });
+
+  // ---------- Hoy ----------
+  function cargarHoy() {
+    var hoy = hoyISO();
+    $('hoyFecha').textContent = fechaBonita(hoy) + ' · se actualiza solo cada 30 segundos.';
+    api('/api/cira/checadas?desde=' + hoy + '&hasta=' + hoy).then(function (r) {
+      if (!r.checadas) { $('hoyTabla').innerHTML = '<tr><td colspan="6" class="vacio">' + esc(r.error || 'Error') + '</td></tr>'; return; }
+      var dias = {}; porDia(r.checadas).forEach(function (d) { dias[d.empleado_id] = d; });
+      var act = empleados.filter(function (e) { return e.activo || dias[e.id]; });
+      var pres = 0, ret = 0, fuera = 0, sin = 0;
+      $('hoyTabla').innerHTML = act.length ? '' : '<tr><td colspan="6" class="vacio">No hay empleados dados de alta.</td></tr>';
+      act.forEach(function (e) {
+        var d = dias[e.id], chip;
+        if (!d) { chip = '<span class="chip c-no">Sin checar</span>'; sin++; }
+        else if (d.sinSalida) { chip = d.retardo ? '<span class="chip c-ret">Presente · ' + d.retardo + ' min tarde</span>' : '<span class="chip c-ok">Presente</span>'; pres++; }
+        else { chip = '<span class="chip c-sal">Ya salió</span>'; fuera++; }
+        if (d && d.retardo) ret++;
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(e.numero) + '</td><td>' + esc(e.nombre) + '</td><td>' + (d && d.entrada ? horaLocal(d.entrada.hora) : '—') + '</td><td>' +
+          (d && d.salida ? horaLocal(d.salida.hora) : '—') + '</td><td class="num">' + horasTxt(d ? d.minutos : 0) + '</td><td>' + chip + '</td>';
+        $('hoyTabla').appendChild(tr);
+      });
+      $('hoyResumen').innerHTML = '<div><b>' + pres + '</b><span>Presentes</span></div><div><b>' + ret + '</b><span>Con retardo</span></div><div><b>' + fuera +
+        '</b><span>Ya salieron</span></div><div><b>' + sin + '</b><span>Sin checar</span></div>';
+    }).catch(function () {});
+  }
+  setInterval(function () { if (cred && !$('tHoy').hidden) cargarHoy(); }, 30000);
+
+  // ---------- Reporte ----------
+  function rango(tipo) {
+    var h = hoyISO(), d;
+    if (tipo === 'semana') { var w = diaSemana(h); d = sumaDias(h, -((w + 6) % 7)); }
+    else if (tipo === 'mes') d = h.slice(0, 8) + '01';
+    else d = h.slice(0, 8) + (+h.slice(8) <= 15 ? '01' : '16');
+    $('rDesde').value = d; $('rHasta').value = h;
+  }
+  document.querySelectorAll('[data-rango]').forEach(function (b) { b.addEventListener('click', function () { rango(b.dataset.rango); verReporte(); }); });
+  var ultimo = null;
+  function verReporte() {
+    var de = $('rDesde').value, ha = $('rHasta').value, emp = $('rEmp').value;
+    if (!de || !ha) return;
+    $('rTabla').innerHTML = '<tr><td colspan="8" class="vacio">Cargando…</td></tr>';
+    api('/api/cira/checadas?desde=' + de + '&hasta=' + ha + (emp ? '&empleado_id=' + emp : '')).then(function (r) {
+      if (!r.checadas) { $('rTabla').innerHTML = '<tr><td colspan="8" class="vacio">' + esc(r.error || 'Error') + '</td></tr>'; return; }
+      var dias = porDia(r.checadas), hoy = r.hoy;
+      var laborables = 0; for (var f = de; f <= ha && f <= hoy; f = sumaDias(f, 1)) if (diaSemana(f) !== 0) laborables++;
+      var lista = empleados.filter(function (e) { return (!emp || String(e.id) === emp) && (e.activo || dias.some(function (d) { return d.empleado_id === e.id; })); });
+      var filas = lista.map(function (e) {
+        var mis = dias.filter(function (d) { return d.empleado_id === e.id; });
+        var hab = mis.filter(function (d) { return diaSemana(d.fecha) !== 0; }).length;
+        return { e: e, dias: mis.length, faltas: Math.max(0, laborables - hab), retardos: mis.filter(function (d) { return d.retardo; }).length,
+          minTarde: mis.reduce(function (a, d) { return a + d.retardo; }, 0), minutos: mis.reduce(function (a, d) { return a + d.minutos; }, 0),
+          sinSalida: mis.filter(function (d) { return d.sinSalida && d.fecha < hoy; }).length };
+      });
+      ultimo = { de: de, ha: ha, filas: filas, dias: dias };
+      $('rTabla').innerHTML = filas.length ? filas.map(function (x) {
+        return '<tr><td>' + esc(x.e.numero) + '</td><td>' + esc(x.e.nombre) + '</td><td class="num">' + x.dias + '</td><td class="num">' + x.faltas +
+          '</td><td class="num">' + x.retardos + '</td><td class="num">' + x.minTarde + '</td><td class="num">' + horasTxt(x.minutos) + '</td><td>' +
+          (x.sinSalida ? '<span class="chip c-ret">' + x.sinSalida + ' día(s)</span>' : '') + '</td></tr>';
+      }).join('') : '<tr><td colspan="8" class="vacio">Sin empleados.</td></tr>';
+      $('dTabla').innerHTML = dias.length ? '' : '<tr><td colspan="7" class="vacio">No hay checadas en este rango.</td></tr>';
+      dias.forEach(function (d) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + esc(fechaBonita(d.fecha)) + '</td><td>' + esc(d.emp.nombre) + '</td><td>' + (d.entrada ? horaLocal(d.entrada.hora) : '—') +
+          (d.retardo ? ' <span class="chip c-ret">+' + d.retardo + '</span>' : '') + '</td><td>' + (d.salida ? horaLocal(d.salida.hora) : (d.fecha < hoy ? '<span class="chip c-ret">Sin salida</span>' : '—')) +
+          '</td><td class="num">' + horasTxt(d.minutos) + '</td><td style="font-size:13px;color:#555">' + esc(d.notas.join(' · ')) + '</td><td></td>';
+        var b = document.createElement('button'); b.className = 'peligro'; b.textContent = 'Borrar última';
+        b.title = 'Borra la última checada de ese día';
+        b.addEventListener('click', function () {
+          var c = d.items[d.items.length - 1];
+          if (!confirm('¿Borrar la ' + c.tipo + ' de las ' + horaLocal(c.hora) + ' de ' + d.emp.nombre + '?')) return;
+          api('/api/cira/checadas/' + c.id, { method: 'DELETE' }).then(verReporte).catch(function () {});
+        });
+        tr.lastChild.appendChild(b); $('dTabla').appendChild(tr);
+      });
+    }).catch(function () {});
+  }
+  $('rVer').addEventListener('click', verReporte);
+  $('rCsv').addEventListener('click', function () {
+    if (!ultimo) return;
+    var c = function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var L = ['Reporte de asistencia CIRA,' + ultimo.de + ' a ' + ultimo.ha, '', 'Número,Empleado,Días,Faltas,Retardos,Min tarde,Horas,Días sin salida'];
+    ultimo.filas.forEach(function (x) { L.push([x.e.numero, x.e.nombre, x.dias, x.faltas, x.retardos, x.minTarde, horasTxt(x.minutos), x.sinSalida].map(c).join(',')); });
+    L.push('', 'Fecha,Número,Empleado,Entrada,Salida,Horas,Retardo (min),Notas');
+    ultimo.dias.forEach(function (d) {
+      L.push([d.fecha, d.emp.numero, d.emp.nombre, d.entrada ? horaLocal(d.entrada.hora) : '', d.salida ? horaLocal(d.salida.hora) : '', horasTxt(d.minutos), d.retardo, d.notas.join(' · ')].map(c).join(','));
+    });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['﻿' + L.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+    a.download = 'asistencia_cira_' + ultimo.de + '_a_' + ultimo.ha + '.csv'; a.click();
+  });
+
+  // ---------- Checada manual ----------
+  $('mFecha').value = hoyISO();
+  $('mGuardar').addEventListener('click', function () {
+    var body = { empleado_id: $('mEmp').value, tipo: $('mTipo').value, fecha: $('mFecha').value, hora: $('mHora').value, nota: $('mNota').value || 'Olvidó checar' };
+    if (!body.empleado_id || !body.fecha || !body.hora) { $('mMsg').style.color = 'var(--error)'; $('mMsg').textContent = 'Elige empleado, fecha y hora.'; return; }
+    api('/api/cira/checadas', { method: 'POST', body: JSON.stringify(body) }).then(function (d) {
+      $('mMsg').style.color = d.ok ? 'var(--ok)' : 'var(--error)'; $('mMsg').textContent = d.ok ? 'Agregada.' : d.error;
+      if (d.ok) { $('mHora').value = ''; verReporte(); }
+    }).catch(function () {});
+  });
+
+  if (cred) entrar();
+})();
+</script>
+</body>
+</html>

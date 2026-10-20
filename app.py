@@ -210,7 +210,7 @@ def _norm(s):
 def hash_pin(pin):
     return hashlib.sha256(pin.encode()).hexdigest()
 
-TABS_VALIDAS = ('home', 'etiquetas', 'req', 'orden', 'rsp', 'reports', 'refacciones', 'settings')
+TABS_VALIDAS = ('home', 'productos', 'movimientos', 'checador', 'etiquetas', 'req', 'orden', 'rsp', 'reports', 'refacciones', 'settings')
 
 def _normalizar_permisos(permisos):
     if isinstance(permisos, list):
@@ -1112,6 +1112,209 @@ def pagina_movimientos():
 def etiquetas_productos():
     html = open('etiquetas-productos.html', encoding='utf-8').read()
     return html, 200, {'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store, no-cache, must-revalidate', 'Pragma':'no-cache'}
+
+# ===================== Checador de asistencia =====================
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _TZ = _ZoneInfo(os.environ.get('CIRA_TZ', 'America/Mexico_City'))
+except Exception:
+    _TZ = datetime.timezone(datetime.timedelta(hours=-6))   # CDMX sin horario de verano
+
+def _ahora():
+    return datetime.datetime.now(_TZ)
+
+_fallos_pin = {}   # numero -> [fallos, bloqueado_hasta]
+
+def _es_admin():
+    """Las rutas de administración piden email + PIN de un usuario con rol admin."""
+    email = (request.headers.get('X-Admin-Email') or '').strip().lower()
+    pin = (request.headers.get('X-Admin-Pin') or '').strip()
+    if not email or not pin:
+        return False
+    try:
+        rows = sb.select('users', select='rol', email='eq.' + email, pin_hash='eq.' + hash_pin(pin))
+    except Exception:
+        return False
+    return bool(rows) and rows[0].get('rol') == 'admin'
+
+def _no_admin():
+    return jsonify({'ok': False, 'error': 'Solo un administrador puede hacer esto. Vuelve a entrar con tu email y PIN.'}), 403
+
+def _hora_txt(h):
+    return (h or '')[:5]
+
+@app.route('/checador')
+@app.route('/checador.html')
+def pagina_checador():
+    html = open('checador.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'}
+
+@app.route('/checador/admin')
+@app.route('/checador-admin.html')
+def pagina_checador_admin():
+    html = open('checador-admin.html', encoding='utf-8').read()
+    return html, 200, {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'}
+
+@app.route('/api/cira/checador', methods=['POST'])
+def checar():
+    d = request.json or {}
+    numero = str(d.get('numero', '')).strip()
+    pin = str(d.get('pin', '')).strip()
+    if not numero or not pin:
+        return jsonify({'ok': False, 'error': 'Escribe tu número y tu PIN.'}), 400
+    ahora = _ahora()
+    f = _fallos_pin.get(numero)
+    if f and f[1] and f[1] > ahora:
+        mins = int((f[1] - ahora).total_seconds() // 60) + 1
+        return jsonify({'ok': False, 'error': f'Demasiados intentos. Espera {mins} min o avisa a tu encargado.'}), 429
+    try:
+        rows = sb.select('empleados', select='id,numero,nombre,pin_hash,hora_entrada,tolerancia_min,activo', numero='eq.' + numero)
+        if not rows or rows[0]['pin_hash'] != hash_pin(pin) or not rows[0].get('activo', True):
+            f = _fallos_pin.setdefault(numero, [0, None])
+            f[0] += 1
+            if f[0] >= 5:
+                f[0], f[1] = 0, ahora + datetime.timedelta(minutes=5)
+            return jsonify({'ok': False, 'error': 'Número o PIN incorrecto.'}), 401
+        _fallos_pin.pop(numero, None)
+        e = rows[0]
+        hoy = ahora.date().isoformat()
+        previas = sb.select('checadas', select='id,tipo,hora', order='hora.asc', empleado_id='eq.' + str(e['id']), fecha='eq.' + hoy)
+        if previas:
+            ultima = datetime.datetime.fromisoformat(previas[-1]['hora'].replace('Z', '+00:00'))
+            if (ahora - ultima).total_seconds() < 60:
+                return jsonify({'ok': False, 'error': f"{e['nombre']}, ya checaste tu {previas[-1]['tipo']} hace un momento."}), 409
+        tipo = 'entrada' if len(previas) % 2 == 0 else 'salida'
+        retardo = 0
+        if tipo == 'entrada' and not previas and e.get('hora_entrada'):
+            hh, mm = [int(x) for x in e['hora_entrada'][:5].split(':')]
+            prog = ahora.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            tarde = int((ahora - prog).total_seconds() // 60)
+            if tarde > int(e.get('tolerancia_min') or 0):
+                retardo = tarde
+        sb.insert('checadas', {'empleado_id': e['id'], 'tipo': tipo, 'fecha': hoy, 'hora': ahora.isoformat(),
+                               'retardo_min': retardo, 'sucursal': str(d.get('sucursal', ''))[:60],
+                               'dispositivo': (request.headers.get('User-Agent') or '')[:120]}, return_rows=False)
+    except Exception as ex:
+        return _error_bd(ex)
+    return jsonify({'ok': True, 'nombre': e['nombre'], 'tipo': tipo, 'hora': ahora.strftime('%H:%M'), 'retardo_min': retardo})
+
+@app.route('/api/cira/admin/verificar', methods=['POST'])
+def checador_admin_verificar():
+    return jsonify({'ok': True}) if _es_admin() else _no_admin()
+
+@app.route('/api/cira/empleados', methods=['GET'])
+def empleados_lista():
+    if not _es_admin(): return _no_admin()
+    try:
+        return jsonify(sb.select('empleados', select='id,numero,nombre,puesto,sucursal,hora_entrada,hora_salida,tolerancia_min,activo', order='nombre.asc'))
+    except Exception as ex:
+        return _error_bd(ex)
+
+def _datos_empleado(d, nuevo):
+    datos = {}
+    for k in ('nombre', 'puesto', 'sucursal'):
+        if k in d: datos[k] = str(d[k] or '').strip()[:120]
+    if 'nombre' in datos: datos['nombre'] = datos['nombre'].upper()
+    for k in ('hora_entrada', 'hora_salida'):
+        if d.get(k): datos[k] = str(d[k])[:5]
+    if 'tolerancia_min' in d:
+        try: datos['tolerancia_min'] = max(0, min(240, int(d['tolerancia_min'])))
+        except Exception: pass
+    if 'activo' in d: datos['activo'] = bool(d['activo'])
+    pin = str(d.get('pin') or '').strip()
+    if pin:
+        if not pin.isdigit() or len(pin) < 4:
+            raise ValueError('El PIN debe ser de al menos 4 números.')
+        datos['pin_hash'] = hash_pin(pin)
+    elif nuevo:
+        raise ValueError('Ponle un PIN de al menos 4 números.')
+    if nuevo and not datos.get('nombre'):
+        raise ValueError('Falta el nombre.')
+    return datos
+
+@app.route('/api/cira/empleados', methods=['POST'])
+def empleados_alta():
+    if not _es_admin(): return _no_admin()
+    d = request.json or {}
+    try:
+        datos = _datos_empleado(d, True)
+    except ValueError as ex:
+        return jsonify({'ok': False, 'error': str(ex)}), 400
+    try:
+        numero = str(d.get('numero') or '').strip()
+        if not numero:
+            ult = sb.select('empleados', select='numero', order='numero.desc', limit=1, numero='match.^[0-9]{3,}$')
+            numero = str(max(101, int(ult[0]['numero']) + 1) if ult else 101)
+        datos['numero'] = numero
+        fila = sb.insert('empleados', datos)[0]
+        fila.pop('pin_hash', None)
+        return jsonify({'ok': True, 'empleado': fila})
+    except requests.exceptions.HTTPError as ex:
+        if ex.response is not None and ex.response.status_code == 409:
+            return jsonify({'ok': False, 'error': 'Ya existe un empleado con ese número.'}), 409
+        return _error_bd(ex)
+    except Exception as ex:
+        return _error_bd(ex)
+
+@app.route('/api/cira/empleados/<int:eid>', methods=['PUT'])
+def empleados_editar(eid):
+    if not _es_admin(): return _no_admin()
+    try:
+        datos = _datos_empleado(request.json or {}, False)
+    except ValueError as ex:
+        return jsonify({'ok': False, 'error': str(ex)}), 400
+    datos['updated_at'] = _ahora().isoformat()
+    try:
+        fila = sb.update('empleados', datos, id='eq.' + str(eid))
+        if not fila: return jsonify({'ok': False, 'error': 'No existe ese empleado.'}), 404
+        fila[0].pop('pin_hash', None)
+        return jsonify({'ok': True, 'empleado': fila[0]})
+    except Exception as ex:
+        return _error_bd(ex)
+
+@app.route('/api/cira/checadas', methods=['GET'])
+def checadas_lista():
+    if not _es_admin(): return _no_admin()
+    hoy = _ahora().date().isoformat()
+    desde = request.args.get('desde') or hoy
+    hasta = request.args.get('hasta') or desde
+    filtros = {'and': f'(fecha.gte.{desde[:10]},fecha.lte.{hasta[:10]})'}
+    if request.args.get('empleado_id'):
+        filtros['empleado_id'] = 'eq.' + str(int(request.args['empleado_id']))
+    try:
+        rows = sb.select('checadas', select='id,empleado_id,tipo,fecha,hora,retardo_min,sucursal,nota,empleados(numero,nombre,hora_salida)',
+                         order='hora.asc', limit=5000, **filtros)
+        return jsonify({'hoy': hoy, 'checadas': rows})
+    except Exception as ex:
+        return _error_bd(ex)
+
+@app.route('/api/cira/checadas', methods=['POST'])
+def checadas_manual():
+    """Checada a mano (olvido, falla). Queda marcada con nota."""
+    if not _es_admin(): return _no_admin()
+    d = request.json or {}
+    try:
+        eid = int(d['empleado_id']); tipo = d['tipo']
+        fecha = str(d['fecha'])[:10]; hora = str(d['hora'])[:5]
+        assert tipo in ('entrada', 'salida')
+        momento = datetime.datetime.fromisoformat(fecha + 'T' + hora).replace(tzinfo=_TZ)
+    except Exception:
+        return jsonify({'ok': False, 'error': 'Faltan datos: empleado, tipo, fecha y hora.'}), 400
+    try:
+        sb.insert('checadas', {'empleado_id': eid, 'tipo': tipo, 'fecha': fecha, 'hora': momento.isoformat(),
+                               'nota': ('Manual: ' + (str(d.get('nota') or '').strip() or 'sin motivo'))[:200]}, return_rows=False)
+        return jsonify({'ok': True})
+    except Exception as ex:
+        return _error_bd(ex)
+
+@app.route('/api/cira/checadas/<int:cid>', methods=['DELETE'])
+def checadas_borrar(cid):
+    if not _es_admin(): return _no_admin()
+    try:
+        sb.delete('checadas', id='eq.' + str(cid), return_rows=False)
+        return jsonify({'ok': True})
+    except Exception as ex:
+        return _error_bd(ex)
 
 # Sirve archivos estaticos sueltos que viven junto a app.py (imagenes, iconos,
 # etc.) para que URLs como /logo-conversion.png funcionen. Solo permite
