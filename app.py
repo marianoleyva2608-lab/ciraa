@@ -984,7 +984,7 @@ def cira_historial_movimientos():
 # ══════════════════════════════════════════════════════════
 PRINT_TOKEN = (os.environ.get('CIRA_PRINT_TOKEN') or '').strip()
 _ZPL_MAX = 2 * 1024 * 1024
-_ahora = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+_ahora_utc = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 def _token_impresora_ok():
     if not PRINT_TOKEN:
@@ -1070,7 +1070,7 @@ def cira_cola():
     try:
         # registrar / actualizar latido de la impresora
         tipo = 'ticket' if request.headers.get('X-Printer-Type') == 'ticket' else 'zpl'
-        sb.insert('impresoras', {'nombre': impresora, 'ultima_conexion': _ahora(), 'tipo': tipo,
+        sb.insert('impresoras', {'nombre': impresora, 'ultima_conexion': _ahora_utc(), 'tipo': tipo,
                                  'version': (request.headers.get('X-Worker-Version') or '')[:20]},
                   upsert=True, on_conflict='nombre', return_rows=False)
         pend = sb.select('trabajos_impresion', select='id', impresora=f'eq.{impresora}',
@@ -1078,7 +1078,7 @@ def cira_cola():
         trabajos = []
         for t in pend:
             # tomar el trabajo solo si sigue pendiente (evita imprimir doble)
-            tomado = sb.update('trabajos_impresion', {'estado': 'enviado', 'tomado_at': _ahora()},
+            tomado = sb.update('trabajos_impresion', {'estado': 'enviado', 'tomado_at': _ahora_utc()},
                                id=f'eq.{t["id"]}', estado='eq.pendiente')
             if tomado:
                 trabajos.append({'id': tomado[0]['id'], 'zpl': tomado[0]['zpl'],
@@ -1093,7 +1093,7 @@ def cira_cola_resultado(trabajo_id):
     if not _token_impresora_ok():
         return jsonify({'ok': False, 'error': 'Token invalido'}), 401
     d = request.get_json(silent=True) or {}
-    datos = {'estado': 'impreso', 'impreso_at': _ahora(), 'error': ''} if d.get('ok') else \
+    datos = {'estado': 'impreso', 'impreso_at': _ahora_utc(), 'error': ''} if d.get('ok') else \
             {'estado': 'error', 'error': str(d.get('error') or 'Error desconocido')[:300]}
     try:
         sb.update('trabajos_impresion', datos, return_rows=False, id=f'eq.{trabajo_id}')
