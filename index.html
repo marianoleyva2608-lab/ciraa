@@ -2213,14 +2213,16 @@ function cmChecar(tipo){
   b1.disabled = b2.disabled = true;
   var fd = new FormData();
   fd.append('usuario_email', cmEmail()); fd.append('tipo', tipo);
+  fd.append('numero', document.getElementById('cm-numero').value.trim());
   fd.append('lat', _cm.pos.lat); fd.append('lng', _cm.pos.lng); fd.append('precision', _cm.pos.acc);
   fd.append('foto', _cm.foto, 'selfie.jpg');
   fetch('/api/cira/checador-movil', {method: 'POST', body: fd}).then(cmJson)
     .then(function(d){
       if (!d.ok) throw new Error(d.error || 'No se pudo checar');
-      alert(tipo + ' registrada a las ' + d.hora + '\n' + d.sucursal + (d.retardo_min ? '\nRetardo: ' + d.retardo_min + ' min' : ''));
+      alert(d.nombre + '\n' + tipo + ' registrada a las ' + d.hora + '\n' + d.sucursal + (d.retardo_min ? '\nRetardo: ' + d.retardo_min + ' min' : ''));
       _cm.foto = null; document.getElementById('cm-foto-prev').style.display = 'none';
       document.getElementById('cm-foto-txt').textContent = 'Toma una selfie para checar';
+      document.getElementById('cm-numero').value = '';
       cmCargar();
     })
     .catch(function(e){ err.textContent = e.message || 'Error de conexión'; })
@@ -2240,7 +2242,7 @@ function cmCargar(){
         return '<div class="cm-li">' + (c.foto ? '<a href="' + src + '" target="_blank"><img src="' + src + '" alt=""></a>' : '') +
           '<div style="flex:1"><b>' + new Date(c.hora).toLocaleTimeString('es-MX', {hour: '2-digit', minute: '2-digit'}) + '</b> ' +
           '<span class="cm-tag" style="background:' + (ent ? 'var(--okb);color:var(--ok)' : 'var(--ngb);color:var(--ng)') + '">' + (ent ? 'Entrada' : 'Salida') + '</span>' +
-          (_cm.admin ? '<div style="font-size:13px">' + cmEsc(c.nombre) + '</div>' : '') +
+          '<div style="font-size:13px">' + cmEsc(c.nombre) + '</div>' +
           '<div style="font-size:12px;color:' + (fuera ? '#9a5b00' : 'var(--ts)') + '">' + cmEsc(c.sucursal || '') + (c.lat != null ? ' · <a href="https://maps.google.com/?q=' + c.lat + ',' + c.lng + '" target="_blank">ver mapa</a>' : '') + '</div></div></div>';
       }).join('') || '<div style="color:#888;font-size:14px;padding:8px 0">Aún no hay checadas hoy.</div>';
       document.getElementById('cm-admin').style.display = _cm.admin ? '' : 'none';
@@ -2417,6 +2419,8 @@ authInit();
       <div class="cm-reloj" id="cm-reloj">--:--</div>
       <div class="cm-fecha" id="cm-fecha"></div>
       <div style="text-align:center;font-weight:700;margin-top:8px" id="cm-nombre"></div>
+      <div class="cm-row" style="margin-top:12px"><span class="ic">&#128100;</span><div style="flex:1"><span class="cm-lbl">¿Quién checa? (número de empleado)</span>
+        <input id="cm-numero" class="cm-in" inputmode="numeric" placeholder="Vacío = yo (sesión abierta)"></div></div>
       <div class="cm-row" style="margin-top:12px"><span class="ic">&#128205;</span><div style="flex:1" id="cm-gps">Obteniendo ubicación…</div><button class="cm-b" style="background:#888;padding:6px 10px;font-size:13px" onclick="cmUbicar()">&#8635;</button></div>
       <div class="cm-row"><span class="ic">&#129331;</span><div style="flex:1" id="cm-foto-txt">Toma una selfie para checar</div>
         <img id="cm-foto-prev" class="cm-foto" style="display:none" alt="">

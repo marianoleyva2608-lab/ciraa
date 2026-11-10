@@ -1399,8 +1399,9 @@ def cm_estado():
     filtros = {'metodo': 'eq.Móvil', 'fecha': 'eq.' + _ahora().date().isoformat()}
     try:
         if not _cm_es_admin(u):
+            # Las suyas y las que se registraron desde su cuenta (celular compartido)
             emp = sb.select('empleados', select='id', email='eq.' + u['email'])
-            filtros['empleado_id'] = 'eq.' + (str(emp[0]['id']) if emp else '0')
+            filtros['or'] = '(empleado_id.eq.' + (str(emp[0]['id']) if emp else '0') + ',nota.ilike.*' + u['email'] + '*)'
         rows = sb.select('checadas', select='id,tipo,hora,sucursal,lat,lng,distancia_m,foto,empleados(nombre)',
                          order='hora.desc', **filtros)
     except Exception:
@@ -1433,17 +1434,25 @@ def cm_checar():
         return jsonify({'error': 'La foto está vacía o pasa de 5 MB'}), 400
     ahora = _ahora()
     hoy = ahora.date().isoformat()
+    numero = (request.form.get('numero') or '').strip()
     try:
-        e = _cm_empleado(u)
+        if numero:
+            # Celular compartido: checa otra persona con su numero de empleado
+            rows = sb.select('empleados', select='id,numero,nombre,hora_entrada,tolerancia_min,activo', numero='eq.' + numero)
+            if not rows:
+                return jsonify({'error': f'No encuentro el número {numero}. Revisa o avisa a tu encargado.'}), 404
+            e = rows[0]
+        else:
+            e = _cm_empleado(u)
         if not e.get('activo', True):
-            return jsonify({'error': 'Tu empleado está dado de baja. Avisa a tu encargado.'}), 403
+            return jsonify({'error': f"{e['nombre']} está dado de baja. Avisa a tu encargado."}), 403
         previas = sb.select('checadas', select='id,tipo,hora', order='hora.asc', empleado_id='eq.' + str(e['id']), fecha='eq.' + hoy)
     except Exception as ex:
         return _error_bd(ex)
     if previas:
         ultima = datetime.datetime.fromisoformat(previas[-1]['hora'].replace('Z', '+00:00'))
         if (ahora - ultima).total_seconds() < 60:
-            return jsonify({'error': f"Ya checaste tu {previas[-1]['tipo']} hace un momento."}), 409
+            return jsonify({'error': f"{e['nombre']} ya checó su {previas[-1]['tipo']} hace un momento."}), 409
     ruta = 'checador_movil/' + ahora.strftime('%Y%m') + '/' + _cm_slug(u['email']) + '_' + ahora.strftime('%d%H%M%S') + '.jpg'
     try:
         _asegurar_bucket()
@@ -1459,12 +1468,13 @@ def cm_checar():
             'retardo_min': _retardo_min(e, ahora) if tipo == 'entrada' and not ya_entro else 0,
             'sucursal': sucursal, 'metodo': 'Móvil', 'lat': lat, 'lng': lng,
             'precision_m': precision, 'distancia_m': dist, 'foto': ruta,
-            'dispositivo': (request.headers.get('User-Agent') or '')[:120]}
+            'dispositivo': (request.headers.get('User-Agent') or '')[:120],
+            'nota': 'Móvil · registró ' + u['email']}
     try:
         sb.insert('checadas', fila, return_rows=False)
     except Exception as ex:
         return _error_bd(ex)
-    return jsonify({'ok': True, 'sucursal': sucursal, 'distancia_m': dist, 'hora': ahora.strftime('%H:%M'),
+    return jsonify({'ok': True, 'nombre': e['nombre'], 'sucursal': sucursal, 'distancia_m': dist, 'hora': ahora.strftime('%H:%M'),
                     'retardo_min': fila['retardo_min']})
 
 @app.route('/api/cira/checador-movil/foto/<path:ruta>', methods=['GET'])
