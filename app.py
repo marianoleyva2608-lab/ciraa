@@ -210,7 +210,7 @@ def _norm(s):
 def hash_pin(pin):
     return hashlib.sha256(pin.encode()).hexdigest()
 
-TABS_VALIDAS = ('home', 'productos', 'movimientos', 'checador', 'etiquetas', 'req', 'orden', 'rsp', 'reports', 'refacciones', 'settings')
+TABS_VALIDAS = ('home', 'productos', 'movimientos', 'checador', 'checm', 'etiquetas', 'req', 'orden', 'rsp', 'reports', 'refacciones', 'settings')
 
 def _normalizar_permisos(permisos):
     if isinstance(permisos, list):
@@ -1141,6 +1141,15 @@ def _no_admin():
 def _hora_txt(h):
     return (h or '')[:5]
 
+def _retardo_min(e, ahora):
+    """Minutos tarde de la primera entrada del dia (0 si llego dentro de la tolerancia)."""
+    if not e.get('hora_entrada'):
+        return 0
+    hh, mm = [int(x) for x in e['hora_entrada'][:5].split(':')]
+    prog = ahora.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    tarde = int((ahora - prog).total_seconds() // 60)
+    return tarde if tarde > int(e.get('tolerancia_min') or 0) else 0
+
 @app.route('/checador')
 @app.route('/checador.html')
 def pagina_checador():
@@ -1172,13 +1181,7 @@ def checar():
             if (ahora - ultima).total_seconds() < 60:
                 return jsonify({'ok': False, 'error': f"{e['nombre']}, ya checaste tu {previas[-1]['tipo']} hace un momento."}), 409
         tipo = 'entrada' if len(previas) % 2 == 0 else 'salida'
-        retardo = 0
-        if tipo == 'entrada' and not previas and e.get('hora_entrada'):
-            hh, mm = [int(x) for x in e['hora_entrada'][:5].split(':')]
-            prog = ahora.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            tarde = int((ahora - prog).total_seconds() // 60)
-            if tarde > int(e.get('tolerancia_min') or 0):
-                retardo = tarde
+        retardo = _retardo_min(e, ahora) if tipo == 'entrada' and not previas else 0
         sb.insert('checadas', {'empleado_id': e['id'], 'tipo': tipo, 'fecha': hoy, 'hora': ahora.isoformat(),
                                'retardo_min': retardo, 'sucursal': str(d.get('sucursal', ''))[:60],
                                'dispositivo': (request.headers.get('User-Agent') or '')[:120]}, return_rows=False)
@@ -1194,7 +1197,7 @@ def checador_admin_verificar():
 def empleados_lista():
     if not _es_admin(): return _no_admin()
     try:
-        return jsonify(sb.select('empleados', select='id,numero,nombre,puesto,sucursal,hora_entrada,hora_salida,tolerancia_min,activo', order='nombre.asc'))
+        return jsonify(sb.select('empleados', select='id,numero,nombre,email,puesto,sucursal,hora_entrada,hora_salida,tolerancia_min,activo', order='nombre.asc'))
     except Exception as ex:
         return _error_bd(ex)
 
@@ -1203,6 +1206,7 @@ def _datos_empleado(d, nuevo):
     for k in ('nombre', 'puesto', 'sucursal'):
         if k in d: datos[k] = str(d[k] or '').strip()[:120]
     if 'nombre' in datos: datos['nombre'] = datos['nombre'].upper()
+    if 'email' in d: datos['email'] = str(d['email'] or '').strip().lower()[:120]
     for k in ('hora_entrada', 'hora_salida'):
         if d.get(k): datos[k] = str(d[k])[:5]
     if 'tolerancia_min' in d:
@@ -1265,8 +1269,13 @@ def checadas_lista():
     if request.args.get('empleado_id'):
         filtros['empleado_id'] = 'eq.' + str(int(request.args['empleado_id']))
     try:
-        rows = sb.select('checadas', select='id,empleado_id,tipo,fecha,hora,retardo_min,sucursal,nota,empleados(numero,nombre,hora_salida)',
-                         order='hora.asc', limit=5000, **filtros)
+        try:
+            rows = sb.select('checadas', select='id,empleado_id,tipo,fecha,hora,retardo_min,sucursal,nota,metodo,lat,lng,distancia_m,foto,empleados(numero,nombre,hora_salida)',
+                             order='hora.asc', limit=5000, **filtros)
+        except requests.exceptions.HTTPError:
+            # Falta correr schema-checador.sql (columnas del checador movil): lista sin ellas
+            rows = sb.select('checadas', select='id,empleado_id,tipo,fecha,hora,retardo_min,sucursal,nota,empleados(numero,nombre,hora_salida)',
+                             order='hora.asc', limit=5000, **filtros)
         return jsonify({'hoy': hoy, 'checadas': rows})
     except Exception as ex:
         return _error_bd(ex)
@@ -1298,6 +1307,200 @@ def checadas_borrar(cid):
         return jsonify({'ok': True})
     except Exception as ex:
         return _error_bd(ex)
+
+# ─── Checador movil: checar desde el celular (igual que en ADPACK) ─────────
+# Usuarios de la app con permiso 'checm' (o 'checador', o admin). Cada checada
+# pide ubicacion GPS y una selfie; se guarda en la misma tabla 'checadas' con
+# metodo 'Móvil', ligada al empleado que tiene el email del usuario (si no
+# existe, se da de alta solo). Las sucursales (geocercas) viven en
+# configuracion 'checador_movil_sucursales' = [{nombre, lat, lng, radio_m}].
+_CM_FUERA = 'Fuera de sucursal'
+CM_BUCKET = 'checador'   # bucket privado de Supabase Storage para las selfies
+
+def _storage_headers(content_type=None):
+    h = {'apikey': SB_KEY, 'Authorization': f'Bearer {SB_KEY}'}
+    if content_type:
+        h['Content-Type'] = content_type
+    return h
+
+def _asegurar_bucket():
+    r = requests.get(SB_URL + '/storage/v1/bucket/' + CM_BUCKET, headers=_storage_headers(), timeout=15)
+    if r.status_code == 200:
+        return
+    requests.post(SB_URL + '/storage/v1/bucket', headers=_storage_headers('application/json'),
+                  json={'id': CM_BUCKET, 'name': CM_BUCKET, 'public': False}, timeout=15)
+
+def _cm_usuario(email):
+    email = (email or '').strip().lower()
+    if not email:
+        return None
+    try:
+        rows = sb.select('users', select='nombre,email,rol,permisos', email='eq.' + email)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    u = rows[0]
+    permisos = [p.strip() for p in (u.get('permisos') or '').split(',')]
+    if u.get('rol') == 'admin' or u.get('permisos') == 'all' or 'checm' in permisos or 'checador' in permisos:
+        return u
+    return None
+
+def _cm_es_admin(u):
+    return bool(u) and (u.get('rol') == 'admin' or u.get('permisos') == 'all')
+
+def _cm_sucursales():
+    try:
+        rows = sb.select('configuracion', select='valor', clave='eq.checador_movil_sucursales')
+        return json.loads(rows[0]['valor']) if rows and rows[0].get('valor') else []
+    except Exception:
+        return []
+
+def _cm_distancia_m(lat1, lng1, lat2, lng2):
+    import math
+    r = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+def _cm_ubicar(lat, lng):
+    """(sucursal, distancia_m) de la geocerca donde esta; (Fuera de sucursal, dist a la mas cercana) si ninguna."""
+    mejor = None
+    for su in _cm_sucursales():
+        d = _cm_distancia_m(lat, lng, float(su['lat']), float(su['lng']))
+        if mejor is None or d < mejor[1]:
+            mejor = (su, d)
+    if mejor and mejor[1] <= float(mejor[0].get('radio_m') or 200):
+        return mejor[0]['nombre'], round(mejor[1])
+    return _CM_FUERA, (round(mejor[1]) if mejor else None)
+
+def _cm_empleado(u):
+    """Empleado ligado al email del usuario; si no hay, se da de alta con su nombre."""
+    campos = 'id,numero,nombre,hora_entrada,tolerancia_min,activo'
+    rows = sb.select('empleados', select=campos, email='eq.' + u['email'])
+    if rows:
+        return rows[0]
+    ult = sb.select('empleados', select='numero', order='numero.desc', limit=1, numero='match.^[0-9]{3,}$')
+    numero = str(max(101, int(ult[0]['numero']) + 1) if ult else 101)
+    return sb.insert('empleados', {'numero': numero, 'nombre': (u.get('nombre') or u['email']).upper()[:120],
+                                   'email': u['email'], 'pin_hash': ''})[0]
+
+def _cm_slug(email):
+    import re
+    return re.sub(r'[^a-z0-9]', '_', email)
+
+@app.route('/api/cira/checador-movil/estado', methods=['GET'])
+def cm_estado():
+    """Sucursales, checadas moviles de hoy del usuario y, si es admin, las de todos."""
+    u = _cm_usuario(request.headers.get('X-Usuario-Email'))
+    if not u:
+        return jsonify({'error': 'No tienes acceso al checador móvil'}), 403
+    filtros = {'metodo': 'eq.Móvil', 'fecha': 'eq.' + _ahora().date().isoformat()}
+    try:
+        if not _cm_es_admin(u):
+            emp = sb.select('empleados', select='id', email='eq.' + u['email'])
+            filtros['empleado_id'] = 'eq.' + (str(emp[0]['id']) if emp else '0')
+        rows = sb.select('checadas', select='id,tipo,hora,sucursal,lat,lng,distancia_m,foto,empleados(nombre)',
+                         order='hora.desc', **filtros)
+    except Exception:
+        rows = []
+    for r in rows:
+        r['nombre'] = (r.pop('empleados', None) or {}).get('nombre', '')
+    return jsonify({'sucursales': _cm_sucursales(), 'checadas': rows, 'es_admin': _cm_es_admin(u),
+                    'usuario': {'nombre': u['nombre'], 'email': u['email']}})
+
+@app.route('/api/cira/checador-movil', methods=['POST'])
+def cm_checar():
+    u = _cm_usuario(request.form.get('usuario_email'))
+    if not u:
+        return jsonify({'error': 'No tienes acceso al checador móvil'}), 403
+    tipo = (request.form.get('tipo') or '').lower()
+    if tipo not in ('entrada', 'salida'):
+        return jsonify({'error': 'Elige Entrada o Salida'}), 400
+    try:
+        lat, lng = float(request.form.get('lat')), float(request.form.get('lng'))
+        precision = round(float(request.form.get('precision') or 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'No llegó tu ubicación. Activa el GPS y vuelve a intentar.'}), 400
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({'error': 'Ubicación inválida'}), 400
+    f = request.files.get('foto')
+    if not f:
+        return jsonify({'error': 'Falta la foto'}), 400
+    datos = f.read()
+    if not datos or len(datos) > 5 * 1024 * 1024:
+        return jsonify({'error': 'La foto está vacía o pasa de 5 MB'}), 400
+    ahora = _ahora()
+    hoy = ahora.date().isoformat()
+    try:
+        e = _cm_empleado(u)
+        if not e.get('activo', True):
+            return jsonify({'error': 'Tu empleado está dado de baja. Avisa a tu encargado.'}), 403
+        previas = sb.select('checadas', select='id,tipo,hora', order='hora.asc', empleado_id='eq.' + str(e['id']), fecha='eq.' + hoy)
+    except Exception as ex:
+        return _error_bd(ex)
+    if previas:
+        ultima = datetime.datetime.fromisoformat(previas[-1]['hora'].replace('Z', '+00:00'))
+        if (ahora - ultima).total_seconds() < 60:
+            return jsonify({'error': f"Ya checaste tu {previas[-1]['tipo']} hace un momento."}), 409
+    ruta = 'checador_movil/' + ahora.strftime('%Y%m') + '/' + _cm_slug(u['email']) + '_' + ahora.strftime('%d%H%M%S') + '.jpg'
+    try:
+        _asegurar_bucket()
+        r = requests.post(SB_URL + '/storage/v1/object/' + CM_BUCKET + '/' + ruta,
+                          headers=_storage_headers('image/jpeg'), data=datos, timeout=60)
+        if r.status_code not in (200, 201):
+            return jsonify({'error': 'No se pudo guardar la foto (' + str(r.status_code) + ')'}), 502
+    except Exception as ex:
+        return jsonify({'error': 'No se pudo guardar la foto: ' + str(ex)}), 502
+    sucursal, dist = _cm_ubicar(lat, lng)
+    ya_entro = any(p['tipo'] == 'entrada' for p in previas)
+    fila = {'empleado_id': e['id'], 'tipo': tipo, 'fecha': hoy, 'hora': ahora.isoformat(),
+            'retardo_min': _retardo_min(e, ahora) if tipo == 'entrada' and not ya_entro else 0,
+            'sucursal': sucursal, 'metodo': 'Móvil', 'lat': lat, 'lng': lng,
+            'precision_m': precision, 'distancia_m': dist, 'foto': ruta,
+            'dispositivo': (request.headers.get('User-Agent') or '')[:120]}
+    try:
+        sb.insert('checadas', fila, return_rows=False)
+    except Exception as ex:
+        return _error_bd(ex)
+    return jsonify({'ok': True, 'sucursal': sucursal, 'distancia_m': dist, 'hora': ahora.strftime('%H:%M'),
+                    'retardo_min': fila['retardo_min']})
+
+@app.route('/api/cira/checador-movil/foto/<path:ruta>', methods=['GET'])
+def cm_foto(ruta):
+    u = _cm_usuario(request.args.get('u'))
+    if not u or '..' in ruta or not ruta.startswith('checador_movil/'):
+        return jsonify({'error': 'Sin acceso'}), 403
+    if not _cm_es_admin(u) and _cm_slug(u['email']) + '_' not in ruta:
+        return jsonify({'error': 'Sin acceso'}), 403
+    r = requests.get(SB_URL + '/storage/v1/object/' + CM_BUCKET + '/' + ruta, headers=_storage_headers(), timeout=60)
+    if r.status_code != 200:
+        return jsonify({'error': 'Foto no encontrada'}), 404
+    return send_file(io.BytesIO(r.content), mimetype='image/jpeg')
+
+@app.route('/api/cira/checador-movil/sucursales', methods=['POST'])
+def cm_guardar_sucursales():
+    d = request.json or {}
+    u = _cm_usuario(d.get('usuario_email'))
+    if not _cm_es_admin(u):
+        return jsonify({'error': 'Solo un administrador puede cambiar las sucursales'}), 403
+    lista = []
+    for su in d.get('sucursales') or []:
+        try:
+            nombre = str(su.get('nombre') or '').strip()[:60]
+            lat, lng, radio = float(su['lat']), float(su['lng']), int(float(su.get('radio_m') or 200))
+        except (TypeError, ValueError, KeyError):
+            return jsonify({'error': 'Sucursal inválida'}), 400
+        if not nombre or not (-90 <= lat <= 90 and -180 <= lng <= 180) or not 20 <= radio <= 5000:
+            return jsonify({'error': 'Revisa nombre, ubicación y radio (20 a 5000 m) de ' + (nombre or 'la sucursal')}), 400
+        lista.append({'nombre': nombre, 'lat': lat, 'lng': lng, 'radio_m': radio})
+    try:
+        sb.insert('configuracion', {'clave': 'checador_movil_sucursales', 'valor': json.dumps(lista, ensure_ascii=False)},
+                  upsert=True, on_conflict='clave', return_rows=False)
+    except Exception as ex:
+        return _error_bd(ex)
+    return jsonify({'ok': True, 'sucursales': lista})
 
 # Sirve archivos estaticos sueltos que viven junto a app.py (imagenes, iconos,
 # etc.) para que URLs como /logo-conversion.png funcionen. Solo permite

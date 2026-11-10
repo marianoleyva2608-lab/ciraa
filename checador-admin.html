@@ -163,13 +163,14 @@
     <section id="tEmpleados" hidden>
       <div class="panel">
         <h2 id="eTit">Nuevo empleado</h2>
-        <p class="ayuda">El número es lo que teclea en el checador. Déjalo vacío y se asigna solo.</p>
+        <p class="ayuda">El número es lo que teclea en el checador. Déjalo vacío y se asigna solo. El email liga al empleado con su usuario de la app para el checador móvil (si checa desde el celular sin estar ligado, se da de alta solo).</p>
         <form class="form" id="fEmp">
           <input type="hidden" id="eId">
           <label>Número <input id="eNumero" inputmode="numeric" placeholder="Automático"></label>
           <label style="grid-column: span 3">Nombre completo <input id="eNombre" required></label>
           <label>Puesto <input id="ePuesto"></label>
           <label>Sucursal <input id="eSucursal"></label>
+          <label style="grid-column: span 2">Email (checador móvil) <input type="email" id="eEmail" placeholder="El de su usuario en la app"></label>
           <label>Hora de entrada <input type="time" id="eEntrada" value="09:00"></label>
           <label>Hora de salida <input type="time" id="eSalida" value="18:00"></label>
           <label>Tolerancia (min) <input type="number" id="eTol" min="0" max="240" value="10"></label>
@@ -217,6 +218,15 @@
   function diaSemana(iso) { return new Date(iso + 'T12:00:00Z').getUTCDay(); }
   function horaLocal(ts) { return new Date(ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Mexico_City' }); }
   function fechaBonita(iso) { return new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); }
+  function movil(c) {
+    if (!c || c.metodo !== 'Móvil') return '';
+    var t = '';
+    if (c.foto && cred) t += ' <a href="/api/cira/checador-movil/foto/' + c.foto + '?u=' + encodeURIComponent(cred.email) + '" target="_blank" title="Selfie">&#128247;</a>';
+    if (c.lat != null) t += ' <a href="https://maps.google.com/?q=' + c.lat + ',' + c.lng + '" target="_blank" title="' + esc(c.sucursal || '') + '">&#128205;</a>';
+    if (c.sucursal === 'Fuera de sucursal') t += ' <span class="chip c-ret">Fuera</span>';
+    return t;
+  }
+  function horaC(c) { return c ? horaLocal(c.hora) + movil(c) : '—'; }
   function horasTxt(min) { if (!min) return '—'; return Math.floor(min / 60) + ':' + String(Math.round(min % 60)).padStart(2, '0'); }
 
   // Agrupa checadas por empleado y día: pares entrada/salida
@@ -288,7 +298,7 @@
   }
   function editar(e) {
     $('eId').value = e.id; $('eNumero').value = e.numero; $('eNumero').disabled = true; $('eNombre').value = e.nombre;
-    $('ePuesto').value = e.puesto || ''; $('eSucursal').value = e.sucursal || '';
+    $('ePuesto').value = e.puesto || ''; $('eSucursal').value = e.sucursal || ''; $('eEmail').value = e.email || '';
     $('eEntrada').value = (e.hora_entrada || '09:00').slice(0, 5); $('eSalida').value = (e.hora_salida || '18:00').slice(0, 5);
     $('eTol').value = e.tolerancia_min; $('eActivo').value = e.activo ? '1' : '0';
     $('eTit').textContent = 'Editar: ' + e.nombre; $('eMsg').textContent = ''; window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -296,7 +306,7 @@
   $('eNuevo').addEventListener('click', limpiar);
   $('fEmp').addEventListener('submit', function (ev) {
     ev.preventDefault();
-    var id = $('eId').value, body = { nombre: $('eNombre').value, puesto: $('ePuesto').value, sucursal: $('eSucursal').value,
+    var id = $('eId').value, body = { nombre: $('eNombre').value, puesto: $('ePuesto').value, sucursal: $('eSucursal').value, email: $('eEmail').value,
       hora_entrada: $('eEntrada').value, hora_salida: $('eSalida').value, tolerancia_min: $('eTol').value, activo: $('eActivo').value === '1' };
     if (!id) body.numero = $('eNumero').value;
     $('eMsg').style.color = '#555'; $('eMsg').textContent = 'Guardando…';
@@ -324,8 +334,8 @@
         else { chip = '<span class="chip c-sal">Ya salió</span>'; fuera++; }
         if (d && d.retardo) ret++;
         var tr = document.createElement('tr');
-        tr.innerHTML = '<td>' + esc(e.numero) + '</td><td>' + esc(e.nombre) + '</td><td>' + (d && d.entrada ? horaLocal(d.entrada.hora) : '—') + '</td><td>' +
-          (d && d.salida ? horaLocal(d.salida.hora) : '—') + '</td><td class="num">' + horasTxt(d ? d.minutos : 0) + '</td><td>' + chip + '</td>';
+        tr.innerHTML = '<td>' + esc(e.numero) + '</td><td>' + esc(e.nombre) + '</td><td>' + horaC(d && d.entrada) + '</td><td>' +
+          horaC(d && d.salida) + '</td><td class="num">' + horasTxt(d ? d.minutos : 0) + '</td><td>' + chip + '</td>';
         $('hoyTabla').appendChild(tr);
       });
       $('hoyResumen').innerHTML = '<div><b>' + pres + '</b><span>Presentes</span></div><div><b>' + ret + '</b><span>Con retardo</span></div><div><b>' + fuera +
@@ -369,8 +379,8 @@
       $('dTabla').innerHTML = dias.length ? '' : '<tr><td colspan="7" class="vacio">No hay checadas en este rango.</td></tr>';
       dias.forEach(function (d) {
         var tr = document.createElement('tr');
-        tr.innerHTML = '<td>' + esc(fechaBonita(d.fecha)) + '</td><td>' + esc(d.emp.nombre) + '</td><td>' + (d.entrada ? horaLocal(d.entrada.hora) : '—') +
-          (d.retardo ? ' <span class="chip c-ret">+' + d.retardo + '</span>' : '') + '</td><td>' + (d.salida ? horaLocal(d.salida.hora) : (d.fecha < hoy ? '<span class="chip c-ret">Sin salida</span>' : '—')) +
+        tr.innerHTML = '<td>' + esc(fechaBonita(d.fecha)) + '</td><td>' + esc(d.emp.nombre) + '</td><td>' + horaC(d.entrada) +
+          (d.retardo ? ' <span class="chip c-ret">+' + d.retardo + '</span>' : '') + '</td><td>' + (d.salida ? horaC(d.salida) : (d.fecha < hoy ? '<span class="chip c-ret">Sin salida</span>' : '—')) +
           '</td><td class="num">' + horasTxt(d.minutos) + '</td><td style="font-size:13px;color:#555">' + esc(d.notas.join(' · ')) + '</td><td></td>';
         var b = document.createElement('button'); b.className = 'peligro'; b.textContent = 'Borrar última';
         b.title = 'Borra la última checada de ese día';
