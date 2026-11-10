@@ -435,6 +435,17 @@ CREATE TABLE IF NOT EXISTS checadas (
 CREATE INDEX IF NOT EXISTS idx_checadas_emp_fecha ON checadas (empleado_id, fecha);
 CREATE INDEX IF NOT EXISTS idx_checadas_fecha     ON checadas (fecha DESC);
 
+-- Checador móvil (como en ADPACK): GPS + selfie desde el celular.
+-- El usuario de la app se liga al empleado por su email.
+ALTER TABLE empleados ADD COLUMN IF NOT EXISTS email TEXT DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_empleados_email ON empleados (email);
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS metodo      TEXT DEFAULT 'Kiosco';   -- Kiosco / Móvil
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS lat         DOUBLE PRECISION;
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS lng         DOUBLE PRECISION;
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS precision_m INTEGER;
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS distancia_m INTEGER;               -- a la sucursal más cercana
+ALTER TABLE checadas ADD COLUMN IF NOT EXISTS foto        TEXT;                  -- ruta de la selfie en Storage
+
 ALTER TABLE empleados ENABLE ROW LEVEL SECURITY;
 ALTER TABLE checadas  ENABLE ROW LEVEL SECURITY;
 
